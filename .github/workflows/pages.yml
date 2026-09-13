@@ -1,0 +1,116 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize the whole release, including checks. Do not cancel a deployment in
+# flight; the package job also rejects old reruns whose commit is no longer main.
+concurrency:
+  group: pages-main-publication
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Main checks
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/checks.yml
+
+  package:
+    name: Package Pages
+    needs: checks
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      vars.PAGES_PUBLISH_ENABLED == 'true' &&
+      needs.checks.result == 'success' &&
+      needs.checks.outputs.checked_attempt == github.run_attempt &&
+      needs.checks.outputs.checked_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
+      packaged_attempt: ${{ steps.release.outputs.attempt }}
+    steps:
+      - name: Reject stale main releases
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKED_SHA: ${{ needs.checks.outputs.checked_sha }}
+        run: |
+          MAIN_SHA="$(gh api --method GET "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$MAIN_SHA" != "$CHECKED_SHA" ]; then
+            echo "Stale release: start a fresh run for the current main commit."
+            exit 1
+          fi
+          printf 'attempt=%s\n' "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Check out only the checked commit
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.checks.outputs.checked_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          clean: true
+
+      - name: Verify checkout identity
+        env:
+          CHECKED_SHA: ${{ needs.checks.outputs.checked_sha }}
+          CHECKOUT_SHA: ${{ steps.checkout.outputs.commit }}
+        run: test "$CHECKOUT_SHA" = "$CHECKED_SHA"
+
+      - name: Set up Node.js for the dependency-free artifact gate
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          check-latest: true
+          package-manager-cache: false
+
+      - name: Validate the clean public assets
+        run: node scripts/validate-publication.cjs
+
+      - name: Package only the validated docs directory
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          name: github-pages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: docs
+          include-hidden-files: true # The allowlisted .nojekyll marker is required.
+          retention-days: 1
+
+  deploy:
+    name: Deploy Pages
+    needs: [checks, package]
+    # A deploy-only/failed-job rerun must not reuse an older attempt's checks or
+    # stale-main guard. Retry all jobs, or dispatch a fresh main release instead.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      vars.PAGES_PUBLISH_ENABLED == 'true' &&
+      needs.checks.result == 'success' &&
+      needs.package.result == 'success' &&
+      needs.checks.outputs.checked_attempt == github.run_attempt &&
+      needs.package.outputs.packaged_attempt == github.run_attempt &&
+      needs.checks.outputs.checked_sha == github.sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    # Configure this environment's main-only branch restriction separately,
+    # before setting the nonsecret PAGES_PUBLISH_ENABLED variable to true.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy the artifact from this checked release
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          artifact_name: ${{ needs.package.outputs.artifact_name }}

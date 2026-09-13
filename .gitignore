@@ -1,0 +1,40 @@
+# Secrets — never commit Spotify token caches
+.spotify_cache
+.s9000_auth_cache
+*.cache
+.env
+.env.*
+!.env.example
+
+# Databases and backups (keep these out of source control)
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite.backup
+*.bak-*
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+*error_log*.txt
+*import_log*.txt
+
+# Local development output (never served by Pages)
+node_modules/
+test-results/
+playwright-report/
+coverage/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

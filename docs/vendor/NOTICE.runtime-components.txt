@@ -1,0 +1,687 @@
+Component notices for the custom sql.js runtime
+==============================================
+
+Runtime: sql.js 1.14.2 with SQLite 3.53.4 and Emscripten 5.0.0.
+These source notices do not certify an exhaustive linked-object audit
+or every original contributor's rights.
+The project MIT license does not replace these component notices.
+
+Retain the accompanying full sql.js, Emscripten, musl, compiler-rt, libc++ and
+libc++abi license/copyright files. The notices below cover identified source families;
+not every listed implementation necessarily survives linking and LTO.
+
+SQLite
+------
+
+SQLite deliverable source is public domain:
+https://www.sqlite.org/copyright.html
+
+The following notice is informational provenance, not an additional obligation
+to comply with the sentiments of the blessing:
+
+The author disclaims copyright to this source code. In place of
+a legal notice, here is a blessing:
+
+   May you do good and not evil.
+   May you find forgiveness for yourself and forgive others.
+   May you share freely, never taking more than you give.
+
+Source: SQLite 3.53.4 amalgamation sqlite3.c, lines 33-40.
+https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+
+Contributed extension-functions.c
+--------------------------------
+
+The unchanged legacy contribution is identified by SHA-256:
+991b40fe8b2799edc215f7260b890f14a833512c9d9896aa080891330ffe4052
+
+Download:
+https://www.sqlite.org/contrib/download/extension-functions.c?get=25
+
+The same bytes occur in Liam Healy's repository:
+https://gitlab.com/liamh/extension-functions/-/raw/f1e8effa1f9f8bdf6a430edd8766a3ca187a113a/extension-functions.c
+
+That repository subsequently added the complete public-domain dedication
+reproduced below:
+https://gitlab.com/liamh/extension-functions/-/raw/16c2a17c7d9675ecbc717cad1883df21011a71e4/LICENSE
+
+The original download contains authorship/history information but no license
+statement. The later repository dedication is documented separately; original
+contributor rights were not independently exhaustively verified. SQLite's
+core public-domain status must not be assumed to license every contribution.
+The historical contribution archive is unsupported:
+https://www.sqlite.org/src/ext/contrib
+
+Original leading comment follows. Its native compilation/loadable-extension
+instructions are historical source documentation, not instructions for this
+browser build, which retains SQLITE_OMIT_LOAD_EXTENSION.
+
+/*
+This library will provide common mathematical and string functions in
+SQL queries using the operating system libraries or provided
+definitions.  It includes the following functions:
+
+Math: acos, asin, atan, atn2, atan2, acosh, asinh, atanh, difference,
+degrees, radians, cos, sin, tan, cot, cosh, sinh, tanh, coth, exp,
+log, log10, power, sign, sqrt, square, ceil, floor, pi.
+
+String: replicate, charindex, leftstr, rightstr, ltrim, rtrim, trim,
+replace, reverse, proper, padl, padr, padc, strfilter.
+
+Aggregate: stdev, variance, mode, median, lower_quartile,
+upper_quartile.
+
+The string functions ltrim, rtrim, trim, replace are included in
+recent versions of SQLite and so by default do not build.
+
+Compilation instructions:
+ Compile this C source file into a dynamic library as follows:
+ * Linux:
+   gcc -fPIC -lm -shared extension-functions.c -o libsqlitefunctions.so
+ * Mac OS X:
+   gcc -fno-common -dynamiclib extension-functions.c -o libsqlitefunctions.dylib
+ (You may need to add flags
+  -I /opt/local/include/ -L/opt/local/lib -lsqlite3
+  if your sqlite3 is installed from Mac ports, or
+  -I /sw/include/ -L/sw/lib -lsqlite3
+  if installed with Fink.)
+ * Windows:
+  1. Install MinGW (http://www.mingw.org/) and you will get the gcc
+  (gnu compiler collection)
+  2. add the path to your path variable (isn't done during the
+   installation!)
+  3. compile:
+   gcc -shared -I "path" -o libsqlitefunctions.so extension-functions.c
+   (path = path of sqlite3ext.h; i.e. C:\programs\sqlite)
+
+Usage instructions for applications calling the sqlite3 API functions:
+  In your application, call sqlite3_enable_load_extension(db,1) to
+  allow loading external libraries.  Then load the library libsqlitefunctions
+  using sqlite3_load_extension; the third argument should be 0.
+  See http://www.sqlite.org/cvstrac/wiki?p=LoadableExtensions.
+  Select statements may now use these functions, as in
+  SELECT cos(radians(inclination)) FROM satsum WHERE satnum = 25544;
+
+Usage instructions for the sqlite3 program:
+  If the program is built so that loading extensions is permitted,
+  the following will work:
+   sqlite> SELECT load_extension('./libsqlitefunctions.so');
+   sqlite> select cos(radians(45));
+   0.707106781186548
+  Note: Loading extensions is by default prohibited as a
+  security measure; see "Security Considerations" in
+  http://www.sqlite.org/cvstrac/wiki?p=LoadableExtensions.
+  If the sqlite3 program and library are built this
+  way, you cannot use these functions from the program, you
+  must write your own program using the sqlite3 API, and call
+  sqlite3_enable_load_extension as described above, or else
+  rebuilt the sqlite3 program to allow loadable extensions.
+
+Alterations:
+The instructions are for Linux, Mac OS X, and Windows; users of other
+OSes may need to modify this procedure.  In particular, if your math
+library lacks one or more of the needed trig or log functions, comment
+out the appropriate HAVE_ #define at the top of file.  If you do not
+wish to make a loadable module, comment out the define for
+COMPILE_SQLITE_EXTENSIONS_AS_LOADABLE_MODULE.  If you are using a
+version of SQLite without the trim functions and replace, comment out
+the HAVE_TRIM #define.
+
+Liam Healy
+
+History:
+2010-01-06 Correct check for argc in squareFunc, and add Windows
+compilation instructions.
+2009-06-24 Correct check for argc in properFunc.
+2008-09-14 Add check that memory was actually allocated after
+sqlite3_malloc or sqlite3StrDup, call sqlite3_result_error_nomem if
+not.  Thanks to Robert Simpson.
+2008-06-13 Change to instructions to indicate use of the math library
+and that program might work.
+2007-10-01 Minor clarification to instructions.
+2007-09-29 Compilation as loadable module is optional with
+COMPILE_SQLITE_EXTENSIONS_AS_LOADABLE_MODULE.
+2007-09-28 Use sqlite3_extension_init and macros
+SQLITE_EXTENSION_INIT1, SQLITE_EXTENSION_INIT2, so that it works with
+sqlite3_load_extension.  Thanks to Eric Higashino and Joe Wilson.
+New instructions for Mac compilation.
+2007-09-17 With help from Joe Wilson and Nuno Luca, made use of
+external interfaces so that compilation is no longer dependent on
+SQLite source code.  Merged source, header, and README into a single
+file.  Added casts so that Mac will compile without warnings (unsigned
+and signed char).
+2007-09-05 Included some definitions from sqlite 3.3.13 so that this
+will continue to work in newer versions of sqlite.  Completed
+description of functions available.
+2007-03-27 Revised description.
+2007-03-23 Small cleanup and a bug fix on the code.  This was mainly
+letting errno flag errors encountered in the math library and checking
+the result, rather than pre-checking.  This fixes a bug in power that
+would cause an error if any non-positive number was raised to any
+power.
+2007-02-07 posted by Mikey C to sqlite mailing list.
+Original code 2006 June 05 by relicoder.
+
+*/
+
+Later repository LICENSE (complete):
+
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org>
+
+musl mathematical implementations
+--------------------------------
+
+Source baseline for the following files:
+https://github.com/emscripten-core/emscripten/tree/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl
+
+SunSoft notice, retained for src/math/acos.c, asin.c, atan2.c, log10.c,
+__sin.c, __cos.c, __rem_pio2_large.c, log_small.c and log2_small.c:
+
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+SunPro notice, retained for src/math/atan.c, sin.c, cos.c, tan.c,
+log1p.c and expm1.c:
+
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+Complete src/math/__rem_pio2.c notice:
+
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ *
+ * Optimized by Bruce D. Evans.
+ */
+
+Complete src/math/__tan.c notice:
+
+/*
+ * ====================================================
+ * Copyright 2004 Sun Microsystems, Inc.  All Rights Reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+Complete src/math/pow_small.c notice:
+
+/*
+ * ====================================================
+ * Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+Arm notice for src/math/exp.c, exp_data.c, pow.c, pow_data.c, log.c
+and log_data.c:
+
+Copyright (c) 2018, Arm Limited.
+SPDX-License-Identifier: MIT
+
+MIT permission and disclaimer for the Arm-attributed code:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+musl qsort
+----------
+
+Complete src/stdlib/qsort.c notice:
+
+/* Copyright (C) 2011 by Valentin Ochs
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
+ */
+
+dlmalloc
+--------
+
+Emscripten's default allocator source is derived from Doug Lea's dlmalloc
+2.8.6. Preserve its source attribution and dedication; it is not musl MIT:
+
+ This is a version (aka dlmalloc) of malloc/free/realloc written by
+ Doug Lea and released to the public domain, as explained at
+ http://creativecommons.org/publicdomain/zero/1.0/ Send questions,
+ comments, complaints, performance data, etc to dl@cs.oswego.edu
+
+ * Version 2.8.6 Wed Aug 29 06:57:58 2012  Doug Lea
+
+Source:
+https://github.com/emscripten-core/emscripten/blob/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/dlmalloc.c
+
+
+Actual linked-source additions
+==============================
+
+The following source notices supplement the earlier source-level set.
+They follow the candidate diagnostic archive-extraction inventory;
+extraction does not prove every member survives LTO. The executed
+Emscripten source revision is a7c5deabd7c88ba1c38ebe988112256775f944c6.
+The earlier be68a767ff3937d97ffc7996a24bd3d7e7f9c849 tag was a comparison
+baseline, not the executed source. Existing compared notices match.
+
+exp2l.c
+-------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/exp2l.c
+
+/*-
+ * Copyright (c) 2005-2008 David Schultz <das@FreeBSD.ORG>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+fmal.c
+------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/fmal.c
+Also covers the identical notice in fmaf.c.
+
+/*-
+ * Copyright (c) 2005-2011 David Schultz <das@FreeBSD.ORG>
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+expl.c
+------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/expl.c
+Also covers identical notices in log10l.c, log2l.c, logl.c, powl.c and tgammal.c.
+
+/*
+ * Copyright (c) 2008 Stephen L. Moshier <steve@moshier.net>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+cbrtl.c
+-------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/cbrtl.c
+
+/*-
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ * Copyright (c) 2009-2011, Bruce D. Evans, Steven G. Kargl, David Schultz.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ *
+ * The argument reduction and testing for exceptional cases was
+ * written by Steven G. Kargl with input from Bruce D. Evans
+ * and David A. Schultz.
+ */
+
+__cosl.c
+--------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__cosl.c
+Also covers the identical notice in __sinl.c.
+
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ * Copyright (c) 2008 Steven G. Kargl, David Schultz, Bruce D. Evans.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+__tanl.c
+--------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__tanl.c
+
+/*
+ * ====================================================
+ * Copyright 2004 Sun Microsystems, Inc.  All Rights Reserved.
+ * Copyright (c) 2008 Steven G. Kargl, David Schultz, Bruce D. Evans.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+__rem_pio2l.c
+-------------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__rem_pio2l.c
+
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ * Copyright (c) 2008 Steven G. Kargl, David Schultz, Bruce D. Evans.
+ *
+ * Developed at SunSoft, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ *
+ * Optimized by Bruce D. Evans.
+ */
+
+expf.c
+------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/expf.c
+The complete MIT terms retained earlier apply to this Arm notice.
+
+/*
+ * Single-precision e^x function.
+ *
+ * Copyright (c) 2017-2018, Arm Limited.
+ * SPDX-License-Identifier: MIT
+ */
+
+powf.c
+------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/powf.c
+The complete MIT terms retained earlier apply to this Arm notice.
+
+/*
+ * Copyright (c) 2017-2018, Arm Limited.
+ * SPDX-License-Identifier: MIT
+ */
+
+acosf.c
+-------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/acosf.c
+
+/* origin: FreeBSD /usr/src/lib/msun/src/e_acosf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+cbrtf.c
+-------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/cbrtf.c
+
+/* origin: FreeBSD /usr/src/lib/msun/src/s_cbrtf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Debugged and optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+__cosdf.c
+---------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__cosdf.c
+
+/* origin: FreeBSD /usr/src/lib/msun/src/k_cosf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Debugged and optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+__sindf.c
+---------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__sindf.c
+
+/* origin: FreeBSD /usr/src/lib/msun/src/k_sinf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+__tandf.c
+---------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__tandf.c
+
+/* origin: FreeBSD /usr/src/lib/msun/src/k_tanf.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright 2004 Sun Microsystems, Inc.  All Rights Reserved.
+ *
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+__rem_pio2f.c
+-------------
+https://raw.githubusercontent.com/emscripten-core/emscripten/a7c5deabd7c88ba1c38ebe988112256775f944c6/system/lib/libc/musl/src/math/__rem_pio2f.c
+
+/* origin: FreeBSD /usr/src/lib/msun/src/e_rem_pio2f.c */
+/*
+ * Conversion to float by Ian Lance Taylor, Cygnus Support, ian@cygnus.com.
+ * Debugged and optimized by Bruce D. Evans.
+ */
+/*
+ * ====================================================
+ * Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *
+ * Developed at SunPro, a Sun Microsystems, Inc. business.
+ * Permission to use, copy, modify, and distribute this
+ * software is freely granted, provided that this notice
+ * is preserved.
+ * ====================================================
+ */
+
+Emscripten runtime and header statements
+-----------------------------------------
+
+The following source statements accompany the complete MIT/NCSA offering in
+LICENSE.emscripten.txt. They supplement that file's older copyright date.
+
+Copyright 2019 The Emscripten Authors.  All rights reserved.
+Sources: system/lib/libc/sbrk.c, system/lib/libc/wasi-helpers.c,
+system/lib/pthread/library_pthread_stub.c, system/include/wasi/wasi-helpers.h.
+
+Copyright 2020 The Emscripten Authors.  All rights reserved.
+Sources: system/include/emscripten/heap.h, system/include/emscripten/stack.h.
+
+Copyright 2021 The Emscripten Authors.  All rights reserved.
+Sources: system/lib/libc/emscripten_get_heap_size.c,
+system/lib/libc/emscripten_syscall_stubs.c,
+system/lib/pthread/pthread_self_stub.c.
+
+Copyright 2022 The Emscripten Authors.  All rights reserved.
+Sources: system/lib/libc/atexit_dummy.c, system/lib/libc/emscripten_time.c,
+system/lib/libc/emscripten_mmap.c.
+
+All these paths are in emscripten-core/emscripten at the executed revision
+identified above. Musl's limited header/CRT exception must not be extended
+to all of these runtime implementations.
+
+WASI API header origin
+----------------------
+
+The included system/include/wasi/api.h records origin WebAssembly/wasi-libc,
+revision 2c2fc9a2fddd0927a66f1c142e65c8dab6f5c5d7, and CC0 1.0 Universal
+public-domain dedication: https://creativecommons.org/publicdomain/zero/1.0/
+This is header-origin information, not a claim the whole wasi-libc was linked.
+
+C++ and ABI support
+-------------------
+
+The candidate extraction inventory contains libc++ new.o/new_helpers.o and
+libc++abi abort_message.o, cxa_handlers.o, cxa_noexception.o, cxa_virtual.o,
+private_typeinfo.o, stdlib_exception.o and stdlib_typeinfo.o. Retain complete
+LICENSE.libcxx.txt and LICENSE.libcxxabi.txt, including Apache-2.0, LLVM
+exceptions, third-party qualifications and the legacy NCSA/MIT sections.
+
+Directly inspected C++ and referenced unwind headers use Apache-2.0 WITH
+LLVM-exception. Header inclusion alone does not establish that a libunwind
+archive was linked; none is recorded in this extraction inventory.
+
+These notices preserve identified component attribution. They are not an
+exhaustive final-object or legal audit, and do not resolve every earlier
+contributor's rights in the historical contributed extension.

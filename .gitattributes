@@ -1,0 +1,6 @@
+# Preserve the verified runtime and upstream notice bytes on every platform.
+docs/vendor/** -text
+
+# Keep the root and served MIT copies byte-identical after checkout.
+LICENSE -text
+docs/LICENSE.txt -text

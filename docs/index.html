@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<!--
+  Sarcastaball 9000 (S9000) — page layout
+  ---------------------------------------
+  This is the single HTML page for the whole app. It defines the visible pieces
+  (top bar, the grid of song buttons, the "now playing" footer, the right-click
+  menu, and the Setup pop-up). All of the behaviour lives in app.js, which is
+  loaded at the very bottom of this file. The sql-wasm.js script above it is a
+  third-party library that lets the browser read SQLite database files.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Never leak the URL (which briefly carries the OAuth code) as a referrer. -->
+  <meta name="referrer" content="no-referrer" />
+  <!--
+    Content-Security-Policy: a allow-list of what this page may load and where it
+    may send resource requests. `connect-src` permits this site (to fetch the
+    sql.js WebAssembly) and Spotify. This reduces exposure; it is not a universal
+    disclosure guarantee or website access control.
+      - script-src 'self' 'wasm-unsafe-eval': our own scripts + the sql.js WASM.
+      - connect-src: same-origin + Spotify's auth and API hosts only.
+      - img-src: same-origin artwork and data images.
+      - object/base/form-action locked down to nothing.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.spotify.com https://accounts.spotify.com; base-uri 'none'; form-action 'none'" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!--
+    Keep this page out of search engines. `noindex` is the authoritative way to do
+    that (robots.txt only asks crawlers not to *fetch* a page — it does not stop the
+    URL from being *indexed* if discovered elsewhere). `nofollow` tells crawlers not
+    to follow links out of the page either. If you also front the site with
+    Cloudflare, add an `X-Robots-Tag: noindex, nofollow` response header for the
+    same effect at the HTTP layer. NOTE: do NOT Disallow this page in robots.txt, or
+    crawlers will never fetch it and so will never see this directive.
+  -->
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Sarcastaball 9000</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="assets/baseball.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="topbar-left">
+      <img id="logo-ball" src="assets/baseball.svg" width="24" height="24" alt="" aria-hidden="true" draggable="false" />
+      <span id="title">Sarcastaball 9000</span>
+      <span id="device-pill" class="pill" data-state="none" role="button" tabindex="0" title="Click to choose the Spotify device to control">⚙️ Set Device</span>
+    </div>
+    <!-- The tab strip lives inside a wrapper that lets it scroll sideways when
+         there are more tabs than fit. The little ‹ › buttons appear only when
+         there is something hidden to scroll to, and the strip fades out softly
+         at whichever edge still has more tabs beyond view. -->
+    <div id="tabs-wrap">
+      <button id="tab-scroll-left" class="tab-scroll hidden" title="Scroll tabs left" aria-label="Scroll tabs left">‹</button>
+      <nav id="tabs"></nav>
+      <button id="tab-scroll-right" class="tab-scroll hidden" title="Scroll tabs right" aria-label="Scroll tabs right">›</button>
+    </div>
+    <div class="topbar-right">
+      <!-- "Track Played" toggle. The eye emoji is the compact label; the tooltip
+           explains what it does so we don't need to spend width on text. -->
+      <label id="track-played-toggle" class="switch-label" title="Track Played: when ON, playing a song marks it as played and grays it out. Turn OFF to replay/tinker without re-flagging.">
+        <span class="switch-emoji" aria-hidden="true">👁️</span>
+        <input type="checkbox" id="track-played" aria-label="Track played songs" />
+        <span class="switch"></span>
+      </label>
+      <button id="btn-clear-played" class="icon-btn" title="Clear the played marks on this tab">🧹</button>
+      <button id="btn-search" class="icon-btn" title="Find a song across all tabs">🔍</button>
+      <button id="btn-add-song" class="icon-btn" title="Add a song from Spotify search or one of your playlists">➕</button>
+      <button id="btn-settings" class="icon-btn" title="Settings">🔧</button>
+      <button id="btn-save" class="icon-btn save-btn hidden" title="Export working database">
+        💾<span id="save-badge" class="badge">0</span>
+      </button>
+      <button id="btn-refresh-db" class="icon-btn" title="Reload database file from disk">🔄</button>
+      <span id="latency-pill" class="pill" title="Round-trip time to Spotify API for the last play command">— ms</span>
+      <button id="btn-stop-all" class="icon-btn" title="Stop playback">🛑</button>
+    </div>
+  </header>
+
+  <div id="transport-status" class="hidden" role="alert"></div>
+
+  <main id="grid-container">
+    <div id="grid"></div>
+    <div id="empty-state" class="hidden">
+      <p>No database loaded.</p>
+      <button id="btn-load-db" class="primary">Load Sarcastaball9000.sqlite</button>
+    </div>
+  </main>
+
+  <footer id="nowplaying" class="hidden">
+    <div id="np-progress" class="hidden">
+      <span id="np-time-cur">0:00</span>
+      <div id="np-bar">
+        <div id="np-bar-fill"></div>
+        <div id="np-bar-caret" tabindex="0" role="slider" aria-label="Start cue" title="Start time — drag to change, or click + ←/→ for ±5s">🔰</div>
+        <div id="np-bar-stop" tabindex="0" role="slider" aria-label="End cue" title="End cue — right-click (or long-press) the bar to set; drag to fine-tune">🛑</div>
+        <div id="np-bar-dot" tabindex="0" role="slider" aria-label="Playback position" title="Current position — click + ←/→ for ±5s, drag to seek"><img class="np-ball" src="assets/baseball.svg" width="24" height="24" alt="" aria-hidden="true" draggable="false" /></div>
+      </div>
+      <span id="np-time-end">0:00</span>
+      <span id="np-remaining" title="Time remaining until the song's end cue"></span>
+    </div>
+    <!-- Adjustment panel: appears when you move a track's start point with the
+         red caret. It holds two sliders that share the same auto-hide timer:
+           • Fine cue nudge — centred at 0; each 50ms notch (±2s total) re-cues
+             the track to that exact spot and saves it as the button's start.
+           • Volume — sets this track's playback volume. While it matches the
+             Settings default it shows a [Default] marker; move it to give the
+             track its own volume. -->
+    <div id="np-cue-fine" class="hidden">
+      <div class="np-fine-row">
+        <span id="np-cue-fine-label">+0.00s &#8594; 0:00.00</span>
+        <input id="np-cue-fine-slider" type="range"
+               min="-2000" max="2000" step="50" value="0"
+               aria-label="Fine cue nudge, plus or minus 2 seconds in 0.05 second steps"
+               title="Fine cue: ±2.00s in 0.05s steps. Each move restarts the track at the new point." />
+      </div>
+      <div class="np-fine-row">
+        <span id="np-vol-label"><span class="vol-emoji">&#128266;</span> 70%</span>
+        <input id="np-vol-slider" type="range"
+               min="0" max="100" step="1" value="70"
+               aria-label="Track volume, 0 to 100 percent"
+               title="Volume for this track. Matches the Settings default until you change it here." />
+      </div>
+    </div>
+    <div id="np-row">
+      <div id="np-info">
+        <button id="np-title" type="button" title="Rename this tile">—</button>
+        <div id="np-sub">—</div>
+      </div>
+      <div id="np-controls">
+        <div id="np-swatches" class="swatches"></div>
+        <button id="np-delete" type="button" class="icon-btn" aria-label="Mark for deletion" title="Mark for deletion (Del)"><span class="emoji-icon" aria-hidden="true">🗑️</span></button>
+        <button id="np-pause" class="icon-btn" aria-label="Pause or resume playback">⏸</button>
+        <button id="np-stop"  class="icon-btn" aria-label="Stop playback">⏹</button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Master volume rail: a vertical fader pinned to the right edge that controls
+       the volume of whatever song is currently playing. It stays hidden until a
+       song is loaded. Dragging the thumb only updates the label; the new volume is
+       previewed live ONLY when you let go (not during the drag, so we don't flood
+       the Spotify API). The 💾 button saves the current level as this song's volume
+       going forward (recorded as a pending edit, written to the file on Save). -->
+  <div id="vol-rail" class="hidden" aria-label="Master volume for the current song">
+    <button id="vol-save" class="icon-btn" title="Save this level as this song's volume">💾</button>
+    <div id="vol-rail-track">
+      <input id="vol-rail-slider" type="range"
+             min="0" max="100" step="5" value="70"
+             aria-label="Master volume for the current song, 0 to 100 percent in 5 percent steps"
+             title="Volume for the current song. Applied when you release the thumb (or pause on a level briefly), in 5% steps." />
+    </div>
+    <div id="vol-rail-label">70%</div>
+    <button id="vol-mute" class="icon-btn" title="Mute / unmute">🔊</button>
+  </div>
+
+  <!-- Cell context menu (right-click) -->
+  <div id="ctx-menu" class="hidden"></div>
+
+  <!-- Settings / setup modal -->
+  <div id="modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="setup-title" tabindex="-1">
+    <div class="modal-card">
+      <h2 id="setup-title">Setup</h2>
+
+      <section>
+        <h3>1. Spotify auth</h3>
+        <p class="hint">You need your own Spotify Premium account and developer app. Enter that app's <strong>Client ID</strong>, then log in. No client secret is needed. In your
+          <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">Spotify dashboard (opens in a new tab)</a>,
+          add this page's URL as a Redirect URI:</p>
+        <code id="redirect-uri-display" class="redirect-uri"></code>
+        <label>Client ID
+          <input id="in-client-id" type="text" placeholder="Spotify Client ID" />
+        </label>
+        <button id="btn-login-spotify" class="primary">Log in with Spotify</button>
+        <button id="btn-logout-spotify" type="button" class="secondary hidden">Log out</button>
+        <div id="auth-status" class="status" role="status"></div>
+        <p class="hint">This website's files are public. Your Spotify app's Development Mode allowlist controls API access, not access to this page. Keep only your intended account on that list.</p>
+        <p class="hint">Protected sign-in requires Web Locks in a secure browser context: HTTPS or loopback HTTP. Browser and native-app compatibility have not been comprehensively verified.</p>
+        <p class="hint"><strong>Only explicitly confirmed logout may clear all app data.</strong> Startup, reload, rejected sign-in attempts and token/network failures must preserve your library, edits, settings and valid remembered sign-in. Reconnection may be needed if Spotify rejects authorization; keep your Client ID and library.</p>
+        <p class="hint">Logout offers export, cancellation or explicit discard before erasing this app's cached database, edits, settings and credentials. Verify any download before confirming erase. To revoke the Spotify grant too, remove the app in your Spotify account settings.</p>
+      </section>
+
+      <section>
+        <h3>2. Database</h3>
+        <p class="hint">Export your own SQLite library from <strong>Sports Audio DJ</strong>, then pick the <code>.sqlite</code> file. Keep an independent backup of the original. Specific Sports Audio DJ versions have not been verified; no starter database is included.</p>
+        <input id="in-db-file" type="file" accept=".sqlite,.db,application/x-sqlite3" />
+        <button id="btn-export-backup" class="secondary">Download pre-edit backup</button>
+        <div id="db-status" class="status" role="status"></div>
+      </section>
+
+      <section>
+        <h3>3. Active device</h3>
+        <p class="hint">Open Spotify on the device you want to control, play any song briefly, then refresh.</p>
+        <div id="device-list" class="device-list"></div>
+        <button id="btn-refresh-devices">Refresh devices</button>
+      </section>
+
+      <section>
+        <h3>Playback</h3>
+        <label>Default volume: <span id="vol-label">70</span>%
+          <input id="in-volume" type="range" min="0" max="100" step="1" value="70" class="full-width" />
+        </label>
+        <p class="hint">Used when starting any track. Overrides the value stored in the DB.</p>
+        <label>Default fade-in: <span id="fade-in-label">0</span>s
+          <input id="in-fade-in" type="range" min="0" max="10" step="1" value="0" class="full-width" />
+        </label>
+        <label>Default fade-out: <span id="fade-out-label">2</span>s
+          <input id="in-fade-out" type="range" min="0" max="10" step="1" value="2" class="full-width" />
+        </label>
+        <p class="hint">Fade-out runs near the end cue. Spotify network commands and browser scheduling are best-effort: exact silence timing and background-tab stops are not guaranteed. A tile's own fade value overrides these defaults.</p>
+      </section>
+
+      <section>
+        <h3>Appearance</h3>
+        <label>Default cell color (used for cells set to "App Default")
+          <select id="in-default-color"></select>
+        </label>
+        <p class="hint">The source database uses red by default; this overrides that for the web app only.</p>
+      </section>
+
+      <section aria-labelledby="about-title">
+        <h3 id="about-title">About</h3>
+        <p class="hint">A personal Spotify Connect cue controller. Audio plays on your selected Spotify device, not in this browser.</p>
+        <p class="hint">Created by <strong>Brian Dagan</strong>. Original project material is MIT licensed.</p>
+        <p class="hint">
+          <a href="https://github.com/briandagan/Sarcastaball9000" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+          &middot; <a href="LICENSE.txt" target="_blank" rel="noopener noreferrer">MIT license</a>
+          &middot; <a href="THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">Third-party notices</a>.
+          Links open in a new tab.
+        </p>
+        <p class="hint">The public repository and hosted release are planned, not yet verified as published. Noindex does not make the site or public source private.</p>
+        <button id="btn-fake-beer" class="secondary">🍺 Buy Me a Fake Beer</button>
+      </section>
+
+      <button id="btn-close-modal" class="secondary">Close</button>
+    </div>
+  </div>
+
+  <!-- Standalone device picker. Opened by clicking the device pill in the top
+       bar; it reuses exactly the same device list/Use buttons as the Settings
+       dialog, just without all the other setup sections. -->
+  <div id="device-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="device-title" tabindex="-1">
+    <div class="modal-card">
+      <h2 id="device-title">Select device</h2>
+      <p class="hint">Open Spotify on the device you want to control, play any song briefly, then refresh.</p>
+      <div id="device-picker-list" class="device-list"></div>
+      <button id="btn-refresh-devices-picker">Refresh devices</button>
+      <button id="btn-close-device-modal" class="secondary">Close</button>
+    </div>
+  </div>
+
+  <!-- Quick-find. Opened with the 🔍 button; type any part of a tile name, song
+       title, or artist and jump straight to the matching tile on whichever tab
+       it lives on (it does NOT auto-play — safer to do live). -->
+  <div id="search-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="search-title" tabindex="-1">
+    <div class="modal-card">
+      <h2 id="search-title">Find a song</h2>
+      <input id="search-input" type="text" aria-label="Find a song in your database" placeholder="Type a tile name, song, or artist…" autocomplete="off" />
+      <div id="search-results" class="search-results"></div>
+      <button id="btn-close-search" class="secondary">Close</button>
+    </div>
+  </div>
+
+  <!-- Add song (➕). Two modes: search Spotify by name, or browse one of your
+       own playlists. Picking a result adds a new tile to the CURRENT tab. -->
+  <div id="add-song-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="add-song-title" tabindex="-1">
+    <div class="modal-card">
+      <h2 id="add-song-title">Add a song</h2>
+      <p class="hint">Adding to: <strong id="add-song-target">—</strong></p>
+      <div id="add-song-tabs" class="seg">
+        <button id="add-mode-search" class="seg-btn active">🔍 Search</button>
+        <button id="add-mode-playlist" class="seg-btn">📂 From playlist</button>
+      </div>
+
+      <div id="add-search-pane">
+        <input id="add-search-input" type="text" aria-label="Search Spotify" placeholder="Search Spotify by song or artist…" autocomplete="off" />
+        <div id="add-search-results" class="search-results"></div>
+      </div>
+
+      <div id="add-playlist-pane" class="hidden">
+        <div id="add-playlist-back" class="hidden">
+          <button id="btn-playlist-back" class="secondary">‹ Back to playlists</button>
+          <span id="add-playlist-name" class="hint"></span>
+        </div>
+        <div id="add-playlist-results" class="search-results"></div>
+      </div>
+
+      <button id="btn-close-add-song" class="secondary">Close</button>
+    </div>
+  </div>
+
+  <div id="logout-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="logout-title" tabindex="-1">
+    <div class="modal-card">
+      <h2 id="logout-title">Export before logout</h2>
+      <p>Logging out erases this app's browser database, unsaved edits, settings and sign-in. Original files and previous downloads are never deleted.</p>
+      <p>Export your current working database first, or explicitly discard the browser copy. Cancel keeps your work.</p>
+      <p>Other DJDad tabs on this same origin will also be cleared. Export any separate work in those tabs first.</p>
+      <button id="btn-logout-export" class="primary">Export database</button>
+      <button id="btn-logout-saved" class="primary hidden">I saved the export - erase and log out</button>
+      <button id="btn-logout-discard" class="secondary">Erase without export</button>
+      <button id="btn-logout-cancel" class="secondary">Cancel</button>
+      <div id="logout-status" class="status" role="status"></div>
+    </div>
+  </div>
+
+  <script src="vendor/sql-wasm.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
