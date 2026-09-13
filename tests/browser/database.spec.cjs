@@ -32,13 +32,29 @@ async function exportForLogout(page) {
   return Buffer.concat(chunks);
 }
 
+for (const mimeType of ["application/octet-stream", "application/vnd.sqlite3", ""]) {
+  test(`the database chooser accepts a valid export reported as ${mimeType || "an unknown type"}`, async ({ page }) => {
+    const chooserOpened = page.waitForEvent("filechooser");
+    await page.locator("#btn-load-db").click();
+    const chooser = await chooserOpened;
+    expect(chooser.isMultiple()).toBe(false);
+    expect(await chooser.element().getAttribute("accept")).toBeNull();
+    const SQL = await getSql();
+    await chooser.setFiles({
+      name: "SADJDatabase.sqlite", mimeType, buffer: Buffer.from(fixture(SQL)),
+    });
+    await expect(page.locator("#grid .cell")).toHaveCount(1);
+    await expect(page.locator("#db-status")).toContainText("Loaded:");
+  });
+}
+
 test("real SQLite import rejects corrupt replacement without losing edits", async ({ page }) => {
   await loadFixture(page);
   await page.evaluate(id => setCellColor(id, 2), ids.firstPlayback);
   await page.evaluate(() => databaseQueue);
   const revision = await page.evaluate(() => getWorkingDatabaseRevision());
   await page.locator("#in-db-file").setInputFiles({
-    name: "broken.sqlite", mimeType: "application/x-sqlite3", buffer: Buffer.from("not a database"),
+    name: "not-a-database.txt", mimeType: "application/octet-stream", buffer: Buffer.from("not a database"),
   });
   await expect(page.locator("#db-status")).toContainText("Import did not complete");
   expect(await page.evaluate(() => getWorkingDatabaseRevision())).toBe(revision);

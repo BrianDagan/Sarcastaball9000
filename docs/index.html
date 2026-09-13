@@ -85,7 +85,7 @@
     <div id="grid"></div>
     <div id="empty-state" class="hidden">
       <p>No database loaded.</p>
-      <button id="btn-load-db" class="primary">Load Sarcastaball9000.sqlite</button>
+      <button id="btn-load-db" class="primary">Load database</button>
     </div>
   </main>
 
@@ -185,7 +185,8 @@
       <section>
         <h3>2. Database</h3>
         <p class="hint">Export your own SQLite library from <strong>Sports Audio DJ</strong>, then pick the <code>.sqlite</code> file. Keep an independent backup of the original. Specific Sports Audio DJ versions have not been verified; no starter database is included.</p>
-        <input id="in-db-file" type="file" accept=".sqlite,.db,application/x-sqlite3" />
+        <p id="db-picker-hint" class="hint">All file types are shown to avoid device-specific filtering. The file can have any name; only a compatible SQLite database will load.</p>
+        <input id="in-db-file" type="file" aria-label="Choose a Sports Audio DJ SQLite database" aria-describedby="db-picker-hint" />
         <button id="btn-export-backup" class="secondary">Download pre-edit backup</button>
         <div id="db-status" class="status" role="status"></div>
       </section>

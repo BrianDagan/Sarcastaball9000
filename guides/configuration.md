@@ -80,6 +80,11 @@ A compatible SQLite export from **Sports Audio DJ is a prerequisite**. Specific
 native-app versions have not been verified. No personal library or starter
 database is bundled, and synthetic fixtures are not a starter-library feature.
 
+The database can have any filename, including `SADJDatabase.sqlite`. The chooser
+intentionally shows all file types: some browsers or file providers do not
+classify SQLite exports consistently. The app validates the selected file's
+SQLite integrity and required schema rather than trusting its name or MIME type.
+
 1. Keep an independent original and import a copy.
 2. Integrity/schema validation precedes replacement of active data and recovery.
 3. Cancel a replacement if current work still needs export; canceling a file
@@ -135,6 +140,7 @@ Spotify mixing/overlap or public/business-playback software.
 | No device / Spotify 404 | Activate Spotify, refresh/reselect the device, and check track availability |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
 | Import rejected | Preserve the original; schema or integrity may be unsupported |
+| File grayed out in the picker | Refresh to load the unfiltered chooser; if it remains unavailable, download a local copy through your file manager/provider. Do not rename or reset app data to bypass this. |
 | Recovery write failed | Keep the tab open and export before reloading or clearing any data |
 | Erase blocked | Close other app tabs using that origin; do not clear unrelated storage |
 | Download missing | Check download permissions/history before acknowledging erase |
