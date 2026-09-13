@@ -23,7 +23,7 @@ test.afterEach(async ({ page }) => {
 test("About credits the creator and exposes safe source and served license links", async ({ page }) => {
   const about = page.getByRole("region", { name: "About", exact: true });
   await expect(about).toContainText("Created by Brian Dagan");
-  await expect(about).toContainText("planned, not yet verified as published");
+  await expect(about).toContainText("Source is publicly available on GitHub.");
   await expect(page.locator("#modal")).toContainText("Sports Audio DJ");
   await expect(page.locator("#modal")).toContainText("Only explicitly confirmed logout may clear all app data.");
   const links = [

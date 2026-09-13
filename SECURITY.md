@@ -12,24 +12,24 @@ remembered Client ID or library. No new Reset control is provided.
 
 The authentication lifecycle below is implemented and covered by deterministic
 Node and isolated Chromium regressions, including the storage-preservation cases.
-That is not a claim of hosted CI, every browser/device, or comprehensive security
-validation. Public release remains separately gated.
+That does not establish compatibility with every browser/device or comprehensive
+security validation. Future releases must preserve these safeguards.
 
 ## Reporting vulnerabilities
 
 Do not post exploit details, credentials or personal data in public issues,
 pull requests or discussions.
 
-Private vulnerability reporting is not yet confirmed for the planned
-`briandagan/Sarcastaball9000` repository. Once enabled and verified, use GitHub's
-**Security -> Report a vulnerability**. If that option is unavailable, do not
+Private vulnerability reporting is enabled for `briandagan/Sarcastaball9000`.
+Use GitHub's **Security -> Report a vulnerability**, or
+[open a private advisory](https://github.com/briandagan/Sarcastaball9000/security/advisories/new).
+If that option is unavailable, do not
 post sensitive details publicly or assume an unpublished contact address exists.
 A public issue may request a private reporting channel without disclosing the
 finding, account information or exploit.
 
-Maintainer publication prerequisite: enable and verify private reporting, then
-replace the pending-channel wording with confirmed instructions. No private
-email address, response-time promise or supported-version guarantee is supplied.
+No private email address, response-time promise or supported-version guarantee
+is supplied.
 
 Even private reports should begin with a redacted description and synthetic
 reproduction, not real data. Include affected behavior, potential impact,

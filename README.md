@@ -8,14 +8,15 @@ buttons, and control playback on a Spotify device.
 a dual-deck mixer or a sample-accurate cue system. No backend, application build,
 analytics service or CDN is required.
 
-- Planned public source: https://github.com/briandagan/Sarcastaball9000
-- Planned site: https://sarcastaball.briandagan.com/
+- Public source: https://github.com/briandagan/Sarcastaball9000
+- Intended website: https://sarcastaball.briandagan.com/
 - Created by **Brian Dagan**
 - Project license: [MIT](LICENSE)
 
-The repository and hosted deployment are planned, not verified as published.
-Authentication remediation, final dependency review and integrated checks remain
-release gates; this documentation does not certify completed validation or passing CI.
+The source repository is public and GitHub Pages is configured for checked
+Actions deployments. The custom hostname still needs Cloudflare DNS setup and
+GitHub certificate/HTTPS verification; see the [deployment guide](guides/deployment.md).
+Passing checks do not establish compatibility with every browser or Spotify device.
 
 ## Data preservation comes first
 
@@ -48,7 +49,7 @@ touch hardware or all Spotify-device support.
 
 ## Windows quickstart
 
-After the repository is public:
+Clone the public repository:
 
 ```powershell
 git clone https://github.com/briandagan/Sarcastaball9000.git

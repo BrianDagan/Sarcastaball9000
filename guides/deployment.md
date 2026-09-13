@@ -1,10 +1,12 @@
 # Deployment and forks
 
-This is a **planned runbook**, not a record of completed publication, passing CI,
-enabled private reporting or configured infrastructure. Upstream is intentionally
-new PUBLIC `briandagan/Sarcastaball9000`, with planned site
-`https://sarcastaball.briandagan.com/`, creator Brian Dagan and MIT licensing.
-The hostname is designated new/unused; check for conflicts before changing it.
+The PUBLIC `briandagan/Sarcastaball9000` repository now exists, with GitHub Actions
+Pages publishing configured, a `main`-only deployment environment, and private
+vulnerability reporting enabled. The intended site is
+`https://sarcastaball.briandagan.com/`, with creator Brian Dagan and MIT licensing.
+Cloudflare DNS and certificate/HTTPS verification for that hostname are still
+pending. The steps below remain the runbook for that setup and future forks;
+do not assume that configuring Pages alone makes the custom hostname reachable.
 
 Repository guides stay outside `docs`, the entire deployed static asset root.
 Retain `noindex, nofollow`; public repository contents, DNS and certificate records
