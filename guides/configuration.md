@@ -76,6 +76,19 @@ Open Spotify on the intended device, activate playback if needed, refresh the
 device list and select it. Check volume before testing. Some devices reject
 transfer, seek or API volume; use physical/Spotify controls when required.
 
+When the controller runs on an iPad or iPhone (including an iPad presenting a
+desktop user agent), it does not send Spotify volume commands. The right-side
+rail and fine-volume row are hidden, and volume/fade settings are disabled with
+an inline explanation instead of a repeated popup. The same controls are hidden
+when the selected Spotify device reports that volume control is unsupported.
+Stored volume/fade values are retained, not reset.
+
+Start, pause, resume, seek and stop still work where the device permits them.
+Volume fades are skipped, but end-cue pauses remain independently scheduled.
+A manually requested Fade Out keeps its configured delayed stop even when it
+cannot ramp the volume. Supported desktop/device volume control remains available;
+genuine API failures are still reported.
+
 A compatible SQLite export from **Sports Audio DJ is a prerequisite**. Specific
 native-app versions have not been verified. No personal library or starter
 database is bundled, and synthetic fixtures are not a starter-library feature.
@@ -105,6 +118,36 @@ Confirmed logout clears only this app's browser data, not originals, downloaded
 files or unrelated origin storage. It does not revoke the Spotify grant or
 guarantee remote audio stops. Check Spotify/device controls directly and use
 Spotify account settings if you also want to revoke the grant.
+
+## Full screen and Home Screen help
+
+The toolbar's **Full screen** button enters/exits native webpage fullscreen when
+the browser permits it. Its label and pressed state follow actual browser events,
+including an exit through the browser's controls. Requests can be denied by the
+browser; no playback or stored data changes are needed to enter fullscreen.
+
+If native fullscreen is unavailable, the same button opens **Full screen and
+Home Screen** help. It is also available from Setup's **Display** section.
+The dialog has Safari, Chrome, Edge and Firefox tabs, with the detected browser
+selected and the detected device's row identified. Detection is best-effort;
+select another tab if needed. Arrow keys, Home and End navigate the tabs.
+
+For Safari on iPhone/iPad, use **Share -> Add to Home Screen**, select **Open as
+Web App** if offered, then **Add** and launch the new icon. Chrome on iPhone/iPad
+also exposes the action through Share on supported versions. If Edge or Firefox
+does not offer it, open the same URL in Safari. The other tabs include
+conditional Android and desktop menu guidance.
+
+Menu names and installation support vary. A shortcut may open a normal browser
+tab rather than a standalone window. A Home Screen app or another browser can
+have separate storage: keep a database export and sign in/import there if needed.
+This does not erase the current browser's data. Fullscreen/Home Screen mode does
+not guarantee background execution, offline Spotify control or exact cue timing.
+
+References:
+[Apple's Home Screen guidance](https://support.apple.com/guide/iphone/bookmark-a-website-iph42ab2f3a7/ios),
+[Chrome's web-app guidance](https://support.google.com/chrome/answer/9658361),
+and [Fullscreen API](https://developer.mozilla.org/en-US/docs/Web/API/Fullscreen_API).
 
 ## Search and playback limits
 

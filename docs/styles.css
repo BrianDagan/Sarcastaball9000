@@ -158,6 +158,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border-radius: 8px; font-size: 20px;
 }
 .icon-btn:active { background: var(--surface-2); }
+#btn-fullscreen[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+#btn-fullscreen:disabled { cursor: wait; }
 .emoji-icon {
   display: inline-block;
   font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", emoji;
@@ -567,7 +569,7 @@ body.vol-open #grid { padding-right: 64px; }
 .swatch[data-color="10"] { background: var(--c10); }
 
 /* ---------- Modal ---------- */
-#modal, #logout-modal {
+#modal, #logout-modal, #fullscreen-help-modal {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6);
   display: flex; align-items: center; justify-content: center;
   z-index: 10; padding: 16px;
@@ -582,6 +584,26 @@ body.vol-open #grid { padding-right: 64px; }
   max-width: 680px;
   max-height: min(90dvh, calc(100dvh - 32px));
 }
+#fullscreen-help-modal .modal-card { max-width: 680px; }
+#fullscreen-browser-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+#fullscreen-browser-tabs button {
+  flex: 1 1 100px; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--text-dim); border-radius: 8px;
+  background: var(--surface-2); color: var(--text);
+}
+#fullscreen-browser-tabs button:hover { border-color: var(--text); }
+#fullscreen-browser-tabs button:active { background: var(--bg); }
+#fullscreen-browser-tabs button[aria-selected="true"] {
+  background: var(--accent); color: #000; border-color: var(--accent);
+}
+.fullscreen-guide { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.fullscreen-guide caption { text-align: left; margin: 8px 0; font-weight: 600; }
+.fullscreen-guide th, .fullscreen-guide td {
+  padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left;
+  vertical-align: top; overflow-wrap: anywhere; font-size: 14px;
+}
+.fullscreen-guide th:first-child { width: 30%; }
+.fullscreen-guide th small { display: block; margin-top: 4px; font-weight: 400; }
 .modal-card h2 { margin: 0 0 12px 0; }
 .modal-card h3 { margin: 18px 0 8px 0; font-size: 15px; }
 .modal-card section { padding: 8px 0; border-top: 1px solid var(--border); }

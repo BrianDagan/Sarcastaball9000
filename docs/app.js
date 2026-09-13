@@ -1444,16 +1444,26 @@ async function getAccessToken() {
   finally { if (refreshPromise === task) { refreshPromise = null; refreshAuth = null; } }
 }
 
-async function api(path, opts = {}) {
-  if (path.startsWith("/me/player") && opts.method && opts.method !== "GET") {
-    if (path !== "/me/player" && activeDeviceCapabilities?.is_restricted) throw new Error("This Spotify device does not permit playback control.");
-    if (path.startsWith("/me/player/volume") && activeDeviceCapabilities?.supports_volume === false) {
-      throw new Error("This device requires its physical or Spotify volume controls.");
-    }
+class VolumeControlUnavailableError extends Error {
+  constructor() {
+    super("This browser or Spotify device requires physical or Spotify volume controls.");
+    this.name = "VolumeControlUnavailableError";
   }
+}
+
+function assertPlaybackCapabilities(path, opts) {
+  if (path.startsWith("/me/player") && opts.method && opts.method !== "GET") {
+    if (path.startsWith("/me/player/volume") && !canControlVolume()) throw new VolumeControlUnavailableError();
+    if (path !== "/me/player" && activeDeviceCapabilities?.is_restricted) throw new Error("This Spotify device does not permit playback control.");
+  }
+}
+
+async function api(path, opts = {}) {
+  assertPlaybackCapabilities(path, opts);
   const generation = authGeneration;
   const tok = await getAccessToken();
   assertAuthGeneration(generation);
+  assertPlaybackCapabilities(path, opts);
   const savedAuth = localStorage.getItem(LS_AUTH);
   const r = await spotifyFetch(API + path, {
     ...opts,
@@ -1492,6 +1502,7 @@ let manualStopTimer = null;
 let stopDeadlineKey = null;
 let reconcileTimer = null;
 let volumeSequence = 0;
+let volumeFineThrottle = null;
 
 function reportTransportFailure(action, error, retry) {
   const status = document.getElementById("transport-status");
@@ -1599,6 +1610,7 @@ async function reconcilePlayback() {
     }
     activeDeviceCapabilities = state.device || activeDeviceCapabilities;
     if (state.device?.id) activeDeviceId = state.device.id;
+    updateVolumeControls();
     nowPlaying.disallows = state.actions?.disallows || {};
     nowPlaying.paused = !state.is_playing;
     document.querySelectorAll(".cell.playing").forEach(cell => cell.classList.toggle("paused", nowPlaying.paused));
@@ -1625,16 +1637,30 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function ensureDevice() {
-  if (activeDeviceId && activeDeviceCapabilities) return activeDeviceId;
+  if (activeDeviceId && activeDeviceCapabilities) {
+    updateVolumeControls();
+    return activeDeviceId;
+  }
   const stored = activeDeviceId || localStorage.getItem(LS_DEVICE);
   const j = await api("/me/player/devices");
   const active = (j.devices || []).find(d => stored ? d.id === stored : d.is_active);
   if (active && !active.is_restricted) {
     activeDeviceId = active.id;
     activeDeviceCapabilities = active;
+    updateVolumeControls();
     return active.id;
   }
   throw new Error("No active Spotify device. Open Spotify on your phone first.");
+}
+
+function isAppleMobileBrowser() {
+  return /iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function canControlVolume() {
+  return !isAppleMobileBrowser() && activeDeviceCapabilities?.supports_volume !== false &&
+    !activeDeviceCapabilities?.is_restricted;
 }
 
 function getDefaultVolumePct() {
@@ -1687,7 +1713,7 @@ async function startPlayback(cell) {
   return queueTransport("Start", async current => {
     const dev = await ensureDevice();
     if (!current()) return;
-    const canVolume = activeDeviceCapabilities?.supports_volume !== false;
+    const canVolume = canControlVolume();
     if (canVolume) await sendVolume(effFadeIn > 0 ? 0 : targetVol);
     if (!current()) return;
     const t0 = performance.now();
@@ -1704,7 +1730,6 @@ async function startPlayback(cell) {
     });
     markCellPlayed(snapshot);
     if (canVolume && effFadeIn > 0) doFade(0, targetVol, effFadeIn * 1000);
-    if (!canVolume) showToast("Use the device's physical or Spotify volume controls; volume fades are unavailable.");
   }, () => startPlayback(snapshot));
 }
 
@@ -1797,7 +1822,7 @@ async function resumePlayback() {
     if (nowPlaying?.disallows?.resuming) throw new Error("Spotify currently disallows resuming this item.");
     const dev = await ensureDevice();
     if (!current()) return;
-    if (progress?.stopFiring && activeDeviceCapabilities?.supports_volume !== false) {
+    if (progress?.stopFiring && canControlVolume()) {
       await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid));
     }
     if (!current()) return;
@@ -1832,7 +1857,7 @@ async function fadeIn() {
   clearTimeout(manualStopTimer);
   cancelFade();
   const target = getDefaultVolumePct();
-  doFade(0, target, getDefaultFadeInSec() * 1000);
+  return doFade(0, target, getDefaultFadeInSec() * 1000);
 }
 
 async function fadeOut(_cell) {
@@ -1843,20 +1868,30 @@ async function fadeOut(_cell) {
   manualStopTimer = setTimeout(() => {
     if (generation === transportGeneration && !erasingBrowser) void stopPlayback();
   }, dur);
-  doFade(nowPlaying ? cellEffectiveVolumePct(nowPlaying.uuid) : getDefaultVolumePct(), 0, dur);
+  return doFade(nowPlaying ? cellEffectiveVolumePct(nowPlaying.uuid) : getDefaultVolumePct(), 0, dur);
 }
 
 async function sendVolume(percent) {
+  if (!canControlVolume()) return false;
   percent = Math.max(0, Math.min(100, Math.round(percent)));
-  await api(`/me/player/volume?volume_percent=${percent}`, { method: "PUT" });
+  try {
+    await api(`/me/player/volume?volume_percent=${percent}`, { method: "PUT" });
+    return true;
+  } catch (error) {
+    if (error instanceof VolumeControlUnavailableError) return false;
+    throw error;
+  }
 }
 
 async function setVolume(percent) {
+  if (!canControlVolume()) return false;
   const sequence = ++volumeSequence;
-  return queueTransport("Volume", async current => {
+  let applied = false;
+  const confirmed = await queueTransport("Volume", async current => {
     if (sequence !== volumeSequence || !current()) return;
-    await sendVolume(percent);
+    applied = await sendVolume(percent);
   }, () => setVolume(percent), false);
+  return confirmed && applied;
 }
 
 function cancelFade() {
@@ -1872,12 +1907,13 @@ function cancelFade() {
 // request in flight, and we skip re-sending a volume the device already has.
 function doFade(fromPct, toPct, durationMs, onDone) {
   cancelFade();
+  if (!canControlVolume()) return false;
   const gen = fadeGen;
   const started = performance.now();
   let lastSent = null;
   const tick = async () => {
     fadeTimer = null;
-    if (gen !== fadeGen || erasingBrowser) return;
+    if (gen !== fadeGen || erasingBrowser || !canControlVolume()) return;
     const fraction = durationMs <= 0 ? 1 : Math.min(1, (performance.now() - started) / durationMs);
     const pct = Math.round(fromPct + (toPct - fromPct) * fraction);
     if (pct !== lastSent) {
@@ -1892,6 +1928,7 @@ function doFade(fromPct, toPct, durationMs, onDone) {
     fadeTimer = setTimeout(tick, Math.min(250, Math.max(0, durationMs - (performance.now() - started))));
   };
   fadeTimer = setTimeout(tick, Math.min(250, Math.max(0, durationMs)));
+  return true;
 }
 
 function setNowPlaying(cell) {
@@ -1925,8 +1962,7 @@ function setNowPlaying(cell) {
   document.getElementById("np-title").textContent = cell.querySelector(".title").textContent;
   document.getElementById("np-sub").textContent = cell.querySelector(".meta").textContent;
   np.classList.remove("hidden");
-  // Reveal the right-edge volume rail and seed it to this song's current volume.
-  showVolRail(true);
+  updateVolumeControls();
   volRailLastSent = null;   // new song = fresh device volume; don't dedup against the old one
   syncVolRail(cellEffectiveVolumePct(nowPlaying.uuid));
   updatePauseBtn();
@@ -2062,7 +2098,7 @@ function renderProgress() {
         progress.stopFiring = true;
         const fromPct = cellEffectiveVolumePct(nowPlaying.uuid);
         const remaining = Math.max(0, stopMs - positionMs);
-        if (fadeMs > 0 && activeDeviceCapabilities?.supports_volume !== false) doFade(fromPct, 0, remaining);
+        if (fadeMs > 0 && canControlVolume()) doFade(fromPct, 0, remaining);
       }
     }
   }
@@ -2172,7 +2208,7 @@ async function seekTo(positionMs, callApi) {
   }
   return queueTransport("Seek", async current => {
     if (nowPlaying?.disallows?.seeking) throw new Error("Spotify currently disallows seeking this item.");
-    if (progress?.stopFiring && nowPlaying && activeDeviceCapabilities?.supports_volume !== false) {
+    if (progress?.stopFiring && nowPlaying && canControlVolume()) {
       await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid));
     }
     if (!current()) return;
@@ -2251,6 +2287,11 @@ function makeSliderThrottle(fn, ms) {
       if (timer) { clearTimeout(timer); timer = null; }
       pending = NONE;
       fn(arg);
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      pending = NONE;
     },
   };
 }
@@ -2364,9 +2405,15 @@ function setupBarInteractions() {
   if (vol) {
     // Same story as the cue slider: each notch is a Spotify /volume PUT, so a
     // drag is throttled and the settled value is flushed on 'change'.
-    const volThrottle = makeSliderThrottle((v) => applyVolumeFine(v), SLIDER_THROTTLE_MS);
-    vol.addEventListener("input",  () => { bumpCueFineHide(); volThrottle.run(parseInt(vol.value, 10)); });
-    vol.addEventListener("change", () => { bumpCueFineHide(); volThrottle.flush(parseInt(vol.value, 10)); });
+    volumeFineThrottle = makeSliderThrottle((v) => applyVolumeFine(v), SLIDER_THROTTLE_MS);
+    vol.addEventListener("input", () => {
+      if (!canControlVolume()) return;
+      bumpCueFineHide(); volumeFineThrottle.run(parseInt(vol.value, 10));
+    });
+    vol.addEventListener("change", () => {
+      if (!canControlVolume()) return;
+      bumpCueFineHide(); volumeFineThrottle.flush(parseInt(vol.value, 10));
+    });
     vol.addEventListener("focus",       bumpCueFineHide);
     vol.addEventListener("pointerdown", bumpCueFineHide);
     vol.addEventListener("keydown",     bumpCueFineHide);
@@ -2475,6 +2522,7 @@ function showCueFine(baseMs, mode) {
     vslider.value = String(pct);
     updateVolLabel(pct);
   }
+  updateVolumeControls();
   wrap.classList.remove("hidden");
   bumpCueFineHide();
 }
@@ -2607,7 +2655,7 @@ function updateVolLabel(pct) {
 // "inherit default" when it lands exactly on the default) and preview it live so
 // you can hear the change on the currently-playing track.
 function applyVolumeFine(pct) {
-  if (!nowPlaying) return;
+  if (!nowPlaying || !canControlVolume()) return;
   if (!Number.isFinite(pct)) return;
   pct = Math.max(0, Math.min(100, Math.round(pct)));
   const def = getDefaultVolumePct();
@@ -2632,8 +2680,33 @@ function applyVolumeFine(pct) {
 function showVolRail(show) {
   const rail = document.getElementById("vol-rail");
   if (!rail) return;
+  show = !!show && canControlVolume();
   rail.classList.toggle("hidden", !show);
   document.body.classList.toggle("vol-open", show);
+}
+
+function updateVolumeControls() {
+  const available = canControlVolume();
+  const focused = document.activeElement;
+  const ids = ["vol-rail-slider", "vol-save", "vol-mute", "np-vol-slider", "in-volume", "in-fade-in", "in-fade-out"];
+  for (const id of ids) {
+    const control = document.getElementById(id);
+    if (control) control.disabled = !available;
+  }
+  document.getElementById("np-volume-row")?.classList.toggle("hidden", !available);
+  document.getElementById("volume-support-hint")?.classList.toggle("hidden", available);
+  if (!available) {
+    volumeSequence++;
+    cancelFade();
+    clearTimeout(volRailSettleTimer);
+    volRailSettleTimer = null;
+    volumeFineThrottle?.cancel();
+    if (ids.includes(focused?.id)) {
+      const target = focused.closest("#modal") ? "btn-close-modal" : nowPlaying ? "np-pause" : "btn-settings";
+      document.getElementById(target)?.focus({ preventScroll: true });
+    }
+  }
+  showVolRail(!!nowPlaying);
 }
 
 // Point the rail's slider + label at a percentage WITHOUT calling the API.
@@ -2681,7 +2754,7 @@ let volRailLastSent = null;
 // Apply a rail level to the live device volume (no persist), guarding on a song
 // being loaded and skipping redundant repeats of the last sent level.
 function applyRailVolumeLive(pct) {
-  if (!nowPlaying) return;
+  if (!nowPlaying || !canControlVolume()) return;
   if (pct === volRailLastSent) return;
   cancelFade();      // don't let a running fade fight the manual change
   void setVolume(pct).then(ok => { if (ok && nowPlaying) volRailLastSent = pct; });
@@ -2695,6 +2768,7 @@ function wireVolRail() {
     // Dragging updates the label immediately and arms a short settle timer: if the
     // thumb stays on this level for VOL_RAIL_SETTLE_MS, that level is applied live.
     slider.addEventListener("input", () => {
+      if (!canControlVolume()) return;
       const pct = parseInt(slider.value, 10);
       const label = document.getElementById("vol-rail-label");
       if (label) label.textContent = `${pct}%`;
@@ -2706,6 +2780,7 @@ function wireVolRail() {
     });
     // Releasing the thumb (change) applies the level immediately — not saved.
     slider.addEventListener("change", () => {
+      if (!canControlVolume()) return;
       if (volRailSettleTimer) { clearTimeout(volRailSettleTimer); volRailSettleTimer = null; }
       applyRailVolumeLive(Math.max(0, Math.min(100, parseInt(slider.value, 10))));
     });
@@ -2715,6 +2790,7 @@ function wireVolRail() {
     // footer slider's pending-edit path (applyVolumeFine), so it shows up in the
     // global Save badge and is written to the file on the next Save/export.
     save.onclick = () => {
+      if (!canControlVolume()) return;
       if (!nowPlaying) { showToast("Play a song first."); return; }
       const pct = Math.max(0, Math.min(100, parseInt(slider.value, 10)));
       applyVolumeFine(pct);   // records pending volume + previews live + updates footer label
@@ -2730,6 +2806,7 @@ function wireVolRail() {
     // level it was at before (live-only, like dragging — it doesn't change the
     // song's saved volume).
     mute.onclick = () => {
+      if (!canControlVolume()) return;
       if (!nowPlaying) { showToast("Play a song first."); return; }
       const cur = Math.max(0, Math.min(100, parseInt(slider.value, 10)));
       const target = (cur > 0) ? 0 : (volRailPreMute || Math.round(getDefaultVolumePct() / 5) * 5);
@@ -3538,7 +3615,8 @@ function setDialogOpen(id, open) {
     child.inert = open && child !== dialog && child.tagName !== "SCRIPT";
   }
   if (open) {
-    const first = dialog.querySelector('button:not(.hidden):not(:disabled), input, select, [href]');
+    const first = Array.from(dialog.querySelectorAll('button, input, select, [href], [tabindex="0"]'))
+      .find(element => !element.disabled && element.tabIndex >= 0 && !element.closest(".hidden"));
     (first || dialog).focus({ preventScroll: true });
   } else {
     const previous = dialogReturnFocus.get(id);
@@ -3567,7 +3645,7 @@ function wireAccessibleControls() {
       else setDialogOpen(dialog.id, false);
     } else if (e.key === "Tab") {
       const controls = Array.from(dialog.querySelectorAll('button, input, select, [href], [tabindex="0"]'))
-        .filter(el => !el.disabled && !el.closest(".hidden"));
+        .filter(el => !el.disabled && el.tabIndex >= 0 && !el.closest(".hidden"));
       const first = controls[0] || dialog;
       const last = controls[controls.length - 1] || dialog;
       if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog)) {
@@ -3577,6 +3655,207 @@ function wireAccessibleControls() {
       }
     }
   }, true);
+}
+
+// =====================================================================
+// Fullscreen and browser-specific Home Screen guidance
+// =====================================================================
+let fullscreenRequest = null;
+const FULLSCREEN_TIMEOUT_MS = 10000;
+const FULLSCREEN_GUIDES = {
+  safari: {
+    name: "Safari",
+    rows: [
+      [["ios"], "iPhone / iPad", "Tap Share (or More, then Share), choose Add to Home Screen, enable Open as Web App if offered, then Add. Launch the new Home Screen icon."],
+      [["mac"], "Mac", "Use this app's full screen button or View > Enter Full Screen. On supported Safari/macOS versions, File > Add to Dock creates a separate app window."],
+      [["android", "windows", "desktop"], "Other computers / Android", "Current Safari is for Apple devices. Choose the Chrome, Edge or Firefox tab for another browser."],
+    ],
+  },
+  chrome: {
+    name: "Chrome",
+    rows: [
+      [["ios"], "iPhone / iPad", "Tap Share beside the address bar, then Add to Home Screen and Add. If that action is missing, open the same site in Safari and follow the Safari tab."],
+      [["android"], "Android", "Open Chrome's menu and choose Add to Home screen, then Install or Create shortcut if offered. Launch the new icon; a shortcut may open a normal browser tab."],
+      [["mac", "windows", "desktop"], "Computer", "Use the full screen button, or look in Chrome's menu under Cast, save, and share for Install page as app. Installation options vary by version and site."],
+    ],
+  },
+  edge: {
+    name: "Edge",
+    rows: [
+      [["ios"], "iPhone / iPad", "Open Edge's Share menu and use Add to Home Screen if offered. If it is absent, open this site in Safari and use Share > Add to Home Screen."],
+      [["android"], "Android", "Look in Edge's menu for Add to Home screen, Add to phone or Install, if offered. If none is available, use Chrome's Home Screen instructions."],
+      [["mac", "windows", "desktop"], "Computer", "Use the full screen button, or Edge's menu > Apps > Install this site as an app, if offered. Launch the installed app from your system's app list."],
+    ],
+  },
+  firefox: {
+    name: "Firefox",
+    rows: [
+      [["ios"], "iPhone / iPad", "Check Firefox's Share menu for Add to Home Screen. If it is not offered, open this site in Safari and follow Share > Add to Home Screen there."],
+      [["android"], "Android", "Look in Firefox's menu for Add to Home screen or Install, if offered. A shortcut may open a normal tab. Chrome is another option when this action is unavailable."],
+      [["mac", "windows", "desktop"], "Computer", "Use this app's full screen button or Firefox's full-screen menu control. Separate web-app installation depends on Firefox version and operating system; a bookmark alone does not create full screen."],
+    ],
+  },
+};
+
+function detectedBrowser() {
+  const ua = navigator.userAgent;
+  if (/EdgiOS|EdgA?\/|Edge\//i.test(ua)) return "edge";
+  if (/FxiOS|Firefox\//i.test(ua)) return "firefox";
+  if (/CriOS|Chrome\/|Chromium\//i.test(ua)) return "chrome";
+  if (/Safari\//i.test(ua)) return "safari";
+  return null;
+}
+
+function detectedPlatform() {
+  if (isAppleMobileBrowser()) return "ios";
+  if (/Android/i.test(navigator.userAgent)) return "android";
+  if (/Mac/i.test(navigator.platform)) return "mac";
+  if (/Win/i.test(navigator.platform)) return "windows";
+  return "desktop";
+}
+
+function fullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+
+function fullscreenApi() {
+  const root = document.documentElement;
+  if (typeof document.exitFullscreen === "function" &&
+      (document.fullscreenElement || (document.fullscreenEnabled && typeof root.requestFullscreen === "function"))) {
+    return { enter: () => root.requestFullscreen(), exit: () => document.exitFullscreen() };
+  }
+  if (typeof document.webkitExitFullscreen === "function" &&
+      (document.webkitFullscreenElement || (document.webkitFullscreenEnabled && typeof root.webkitRequestFullscreen === "function"))) {
+    return { enter: () => root.webkitRequestFullscreen(), exit: () => document.webkitExitFullscreen() };
+  }
+  return null;
+}
+
+function syncFullscreenButton() {
+  const button = document.getElementById("btn-fullscreen");
+  const active = !!fullscreenElement();
+  const supported = !!fullscreenApi();
+  const label = active ? "Exit full screen" : supported ? "Enter full screen" : "Full screen help";
+  button.classList.remove("hidden");
+  button.disabled = !!fullscreenRequest;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  if (supported || active) {
+    button.setAttribute("aria-pressed", String(active));
+    button.removeAttribute("aria-haspopup");
+  } else {
+    button.removeAttribute("aria-pressed");
+    button.setAttribute("aria-haspopup", "dialog");
+  }
+}
+
+function finishFullscreenRequest(request, confirmed) {
+  if (fullscreenRequest !== request) return;
+  clearTimeout(request.timer);
+  fullscreenRequest = null;
+  syncFullscreenButton();
+  if (!confirmed) showToast("Full screen was not confirmed. Home Screen help is available in Settings.");
+  request.resolve(confirmed);
+}
+
+function toggleFullscreen() {
+  if (fullscreenRequest) return Promise.resolve(false);
+  const api = fullscreenApi();
+  if (!api) {
+    openFullscreenHelp();
+    return Promise.resolve(false);
+  }
+  return new Promise(resolve => {
+    const request = { resolve, desired: !fullscreenElement(), timer: null };
+    fullscreenRequest = request;
+    request.timer = setTimeout(() => finishFullscreenRequest(request, !!fullscreenElement() === request.desired), FULLSCREEN_TIMEOUT_MS);
+    syncFullscreenButton();
+    try {
+      // Invoke immediately in the click handler, before yielding user activation.
+      const operation = request.desired ? api.enter() : api.exit();
+      Promise.resolve(operation).then(() => {
+        if (!!fullscreenElement() === request.desired) finishFullscreenRequest(request, true);
+      }, () => finishFullscreenRequest(request, false));
+    } catch {
+      finishFullscreenRequest(request, false);
+    }
+  });
+}
+
+function selectFullscreenBrowser(browser, focus = false) {
+  if (!Object.hasOwn(FULLSCREEN_GUIDES, browser)) throw new Error("Unknown browser help tab.");
+  const guide = FULLSCREEN_GUIDES[browser];
+  document.querySelectorAll("#fullscreen-browser-tabs [role='tab']").forEach(tab => {
+    const active = tab.dataset.browser === browser;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  document.getElementById("fullscreen-guide-panel").setAttribute("aria-labelledby", `fullscreen-tab-${browser}`);
+  const body = document.getElementById("fullscreen-guide-steps");
+  body.replaceChildren();
+  const platform = detectedPlatform();
+  for (const [platforms, label, steps] of guide.rows) {
+    const row = document.createElement("tr");
+    const heading = document.createElement("th");
+    heading.scope = "row";
+    heading.textContent = label;
+    if (platforms.includes(platform)) {
+      const current = document.createElement("small");
+      current.textContent = "This device";
+      heading.appendChild(current);
+    }
+    const instructions = document.createElement("td");
+    instructions.textContent = steps;
+    row.append(heading, instructions);
+    body.appendChild(row);
+  }
+  if (focus) document.getElementById(`fullscreen-tab-${browser}`).focus();
+}
+
+function openFullscreenHelp() {
+  const browser = detectedBrowser();
+  const selected = browser || (isAppleMobileBrowser() ? "safari" : "chrome");
+  const standalone = navigator.standalone === true || window.matchMedia?.("(display-mode: standalone)").matches;
+  const mode = standalone ? "Already running in a Home Screen or app window." :
+    fullscreenApi() ? "Native full screen is available from the toolbar." :
+      "This browser does not offer webpage full screen here.";
+  document.getElementById("fullscreen-help-context").textContent =
+    `${mode} ${browser ? `Detected browser: ${FULLSCREEN_GUIDES[browser].name}.` : "Browser could not be identified."} Choose another tab if needed.`;
+  selectFullscreenBrowser(selected);
+  setDialogOpen("fullscreen-help-modal", true);
+}
+
+function wireFullscreenControls() {
+  document.getElementById("btn-fullscreen").onclick = () => { void toggleFullscreen(); };
+  document.getElementById("btn-fullscreen-help").onclick = openFullscreenHelp;
+  document.getElementById("btn-close-fullscreen-help").onclick = () => setDialogOpen("fullscreen-help-modal", false);
+  const tabs = Array.from(document.querySelectorAll("#fullscreen-browser-tabs [role='tab']"));
+  tabs.forEach((tab, index) => {
+    tab.onclick = () => selectFullscreenBrowser(tab.dataset.browser, true);
+    tab.addEventListener("keydown", event => {
+      let next;
+      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      selectFullscreenBrowser(tabs[next].dataset.browser, true);
+    });
+  });
+  for (const event of ["fullscreenchange", "webkitfullscreenchange"]) {
+    document.addEventListener(event, () => {
+      if (fullscreenRequest && !!fullscreenElement() === fullscreenRequest.desired) {
+        finishFullscreenRequest(fullscreenRequest, true);
+      } else syncFullscreenButton();
+    });
+  }
+  for (const event of ["fullscreenerror", "webkitfullscreenerror"]) {
+    document.addEventListener(event, () => {
+      if (fullscreenRequest) finishFullscreenRequest(fullscreenRequest, false);
+    });
+  }
+  syncFullscreenButton();
 }
 
 // =====================================================================
@@ -4066,6 +4345,11 @@ async function refreshDevices(listId = "device-list") {
   list.innerHTML = "<div class='hint'>Loading...</div>";
   try {
     const j = await api("/me/player/devices");
+    const selected = (j.devices || []).find(device => device.id === activeDeviceId);
+    if (selected) {
+      activeDeviceCapabilities = selected;
+      updateVolumeControls();
+    }
     list.innerHTML = "";
     (j.devices || []).forEach(d => {
       const div = document.createElement("div");
@@ -4090,6 +4374,7 @@ async function refreshDevices(listId = "device-list") {
           localStorage.setItem(LS_DEVICE_NAME, d.name);
           activeDeviceId = d.id;
           activeDeviceCapabilities = d;
+          updateVolumeControls();
           setDevicePill(d.name);
           closeDevicePicker();
           refreshDevices("device-list");
@@ -4251,6 +4536,7 @@ function clearErasedBrowserView(preserveCurrentSettings = false) {
     document.getElementById("in-default-color").value = String(getDefaultColor());
   }
   setDevicePill(null);
+  updateVolumeControls();
 }
 
 async function eraseBrowserData() {
@@ -4405,6 +4691,7 @@ function reconcilePeerErase(rawSignal) {
         if (!authStorage(() => localStorage.getItem(LS_DEVICE))) {
           activeDeviceId = activeDeviceCapabilities = null;
           setDevicePill(null);
+          updateVolumeControls();
         }
         document.getElementById("auth-status").textContent = "Another DJDad tab logged out; this app's browser data was erased. Spotify playback may continue on your device.";
         document.getElementById("auth-status").className = "status ok";
@@ -4603,6 +4890,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-refresh-devices-picker").onclick = () => refreshDevices("device-picker-list");
   document.getElementById("btn-close-device-modal").onclick = closeDevicePicker;
   wireVolRail();
+  updateVolumeControls();
+  wireFullscreenControls();
 
   // wire buttons
   document.getElementById("btn-settings").onclick = () => showModal(true);
@@ -4706,10 +4995,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // Don't let grid/transport shortcuts fire while a dialog overlay is open
     // (Settings, the device picker, or quick-find). Otherwise, e.g., pressing a
     // letter behind an open dialog could start a song unexpectedly.
-    const overlayOpen = ["modal", "device-modal", "search-modal", "add-song-modal", "logout-modal"].some(id => {
-      const el = document.getElementById(id);
-      return el && !el.classList.contains("hidden");
-    });
+    const overlayOpen = document.querySelector('[role="dialog"]:not(.hidden)');
     if (overlayOpen) return;
     const key = e.key;
     // Ignore anything held with a system/browser modifier (Ctrl/Cmd/Alt) so we
@@ -4853,13 +5139,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     volLabel.textContent = volInput.value;
   });
   volInput.addEventListener("change", async () => {
+    if (!canControlVolume()) return;
     const v = parseInt(volInput.value, 10);
     localStorage.setItem(LS_VOLUME, String(v));
     // Live-apply only if the playing track is inheriting the default volume —
     // a track with its own explicit volume shouldn't be overridden by a change
     // to the global default.
     if (nowPlaying && !nowPlaying.paused && cellRawVolume(nowPlaying.uuid) < 0) {
-      try { await setVolume(v); } catch (e) {}
+      await setVolume(v);
     }
     // Keep the per-track volume label/slider honest if the panel is open and the
     // track follows the default (its effective percentage just moved).
@@ -4886,6 +5173,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     fadeInLabel.textContent = String(init);
     fadeInInput.addEventListener("input", () => { fadeInLabel.textContent = fadeInInput.value; });
     fadeInInput.addEventListener("change", () => {
+      if (!canControlVolume()) return;
       localStorage.setItem(LS_FADE_IN, String(parseInt(fadeInInput.value, 10)));
     });
   }
@@ -4897,6 +5185,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     fadeOutLabel.textContent = String(init);
     fadeOutInput.addEventListener("input", () => { fadeOutLabel.textContent = fadeOutInput.value; });
     fadeOutInput.addEventListener("change", () => {
+      if (!canControlVolume()) return;
       localStorage.setItem(LS_FADE_OUT, String(parseInt(fadeOutInput.value, 10)));
     });
   }

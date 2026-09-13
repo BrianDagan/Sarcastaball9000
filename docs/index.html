@@ -70,6 +70,7 @@
       <button id="btn-search" class="icon-btn" title="Find a song across all tabs">🔍</button>
       <button id="btn-add-song" class="icon-btn" title="Add a song from Spotify search or one of your playlists">➕</button>
       <button id="btn-settings" class="icon-btn" title="Settings">🔧</button>
+      <button id="btn-fullscreen" type="button" class="icon-btn hidden" title="Enter full screen" aria-label="Enter full screen" aria-pressed="false"><span aria-hidden="true">⛶</span></button>
       <button id="btn-save" class="icon-btn save-btn hidden" title="Export working database">
         💾<span id="save-badge" class="badge">0</span>
       </button>
@@ -116,7 +117,7 @@
                aria-label="Fine cue nudge, plus or minus 2 seconds in 0.05 second steps"
                title="Fine cue: ±2.00s in 0.05s steps. Each move restarts the track at the new point." />
       </div>
-      <div class="np-fine-row">
+      <div id="np-volume-row" class="np-fine-row">
         <span id="np-vol-label"><span class="vol-emoji">&#128266;</span> 70%</span>
         <input id="np-vol-slider" type="range"
                min="0" max="100" step="1" value="70"
@@ -200,6 +201,7 @@
 
       <section>
         <h3>Playback</h3>
+        <p id="volume-support-hint" class="hint hidden">Browser volume and volume fades are unavailable on iPad/iPhone or a device that disallows them. Use physical or Spotify volume controls. Saved values are retained, and end cues still stop playback.</p>
         <label>Default volume: <span id="vol-label">70</span>%
           <input id="in-volume" type="range" min="0" max="100" step="1" value="70" class="full-width" />
         </label>
@@ -211,6 +213,11 @@
           <input id="in-fade-out" type="range" min="0" max="10" step="1" value="2" class="full-width" />
         </label>
         <p class="hint">Fade-out runs near the end cue. Spotify network commands and browser scheduling are best-effort: exact silence timing and background-tab stops are not guaranteed. A tile's own fade value overrides these defaults.</p>
+      </section>
+
+      <section>
+        <h3>Display</h3>
+        <button id="btn-fullscreen-help" type="button" class="secondary">Home Screen and full screen help</button>
       </section>
 
       <section>
@@ -289,6 +296,29 @@
       </div>
 
       <button id="btn-close-add-song" class="secondary">Close</button>
+    </div>
+  </div>
+
+  <div id="fullscreen-help-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="fullscreen-help-title" tabindex="-1">
+    <div class="modal-card">
+      <h2 id="fullscreen-help-title">Full screen and Home Screen</h2>
+      <p id="fullscreen-help-context" class="hint"></p>
+      <p class="hint">Home Screen or installed-app mode is an alternative to native full screen. Menus vary by browser and version; an ordinary shortcut may still open a browser tab.</p>
+      <div id="fullscreen-browser-tabs" role="tablist" aria-label="Browser instructions">
+        <button id="fullscreen-tab-safari" type="button" role="tab" data-browser="safari" aria-selected="true" aria-controls="fullscreen-guide-panel">Safari</button>
+        <button id="fullscreen-tab-chrome" type="button" role="tab" data-browser="chrome" aria-selected="false" aria-controls="fullscreen-guide-panel" tabindex="-1">Chrome</button>
+        <button id="fullscreen-tab-edge" type="button" role="tab" data-browser="edge" aria-selected="false" aria-controls="fullscreen-guide-panel" tabindex="-1">Edge</button>
+        <button id="fullscreen-tab-firefox" type="button" role="tab" data-browser="firefox" aria-selected="false" aria-controls="fullscreen-guide-panel" tabindex="-1">Firefox</button>
+      </div>
+      <div id="fullscreen-guide-panel" role="tabpanel" aria-labelledby="fullscreen-tab-safari" tabindex="0">
+        <table class="fullscreen-guide">
+          <caption>Home Screen and app-window options</caption>
+          <thead><tr><th scope="col">Device</th><th scope="col">Steps</th></tr></thead>
+          <tbody id="fullscreen-guide-steps"></tbody>
+        </table>
+      </div>
+      <p class="hint">A separate browser or Home Screen app may use separate storage. Keep a database export and sign in/import there if needed; your current browser's data is not erased. Full screen does not guarantee background playback or cue timing.</p>
+      <button id="btn-close-fullscreen-help" type="button" class="secondary">Close</button>
     </div>
   </div>
 

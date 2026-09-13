@@ -95,5 +95,9 @@ honor reduced motion. Scope Settings-only layout changes to its own dialog.
 Give native emoji controls explicit accessible labels independent of the glyph.
 Theme both foreground and background on dynamic action buttons; check enabled
 normal, hover, keyboard-focus and pressed text contrast against 4.5:1.
+Use the shared volume-capability guard for every live volume/fade path. iPad/iPhone
+controllers must not send volume commands; hide unusable controls without losing
+stored values or end-cue pauses. Fullscreen state must follow browser events;
+unsupported browsers get the accessible, browser-selected Home Screen help tabs.
 Spotify control is best-effort, not sample-accurate or background-safe. Do not add
 Spotify mixing/overlap or public/business-playback features.
