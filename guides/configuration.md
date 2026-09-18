@@ -89,6 +89,9 @@ A manually requested Fade Out keeps its configured delayed stop even when it
 cannot ramp the volume. Supported desktop/device volume control remains available;
 genuine API failures are still reported.
 
+The [automatic iPad idle mode](#automatic-ipad-idle-silence) changes eligible
+Pause/Stop behavior, not these volume protections.
+
 A compatible SQLite export from **Sports Audio DJ is a prerequisite**. Specific
 native-app versions have not been verified. No personal library or starter
 database is bundled, and synthetic fixtures are not a starter-library feature.
@@ -118,6 +121,120 @@ Confirmed logout clears only this app's browser data, not originals, downloaded
 files or unrelated origin storage. It does not revoke the Spotify grant or
 guarantee remote audio stops. Check Spotify/device controls directly and use
 Spotify account settings if you also want to revoke the grant.
+
+## Automatic iPad idle silence
+
+This section describes the local feature contract for builds with **Settings ->
+Playback -> Keep iPad Spotify awake**. It is not a claim of public deployment or
+new hardware validation. The preference is on when absent and is saved for this
+origin under `s9000.ipadKeepAlive` (`0` means off); uncheck it to opt out.
+
+A reported iPad trial lost control after about two minutes paused, while
+continuous playback of a silent Spotify track kept it reachable beyond two
+minutes. That supports an idle-playback workaround, not a confirmed iPadOS cause,
+background-timer guarantee or compatibility claim for other iPads, Safari or
+Home Screen mode.
+
+The mode is automatic only when the **selected Spotify playback-device name
+contains `iPad`, case-insensitive**. It does not select devices based on the
+controller's device/user agent or apply to every Apple output. This rule is
+independent of the controller-based iPad/iPhone volume guard.
+
+Automatic idle playback requires all of the following:
+
+- The app is visible and authorization is valid.
+- Fresh Spotify state confirms that the selected device is present, eligible,
+  unrestricted and idle. A missing, offline, stale or unknown device/state is not
+  permission to play.
+- Spotify's repeat state is confirmed **Off**. If repeat is enabled, the app asks
+  you to turn it Off in Spotify, then retry; it does not silently change it.
+
+Automatic idle detection must not replace music that Spotify reports as already
+playing. When eligible, the app uses a normal Spotify play command for the
+[linked silent catalog track](https://open.spotify.com/track/3mkOlbSv5RYadx0JsjTrKq).
+That ID identifies public catalog content, not an account or device. It is not
+added as a SQLite library tile; library data, playback flags and stored
+volume/fade values are preserved. Idle playback sends no volume/fade commands.
+
+### Pause, Stop, Resume and opting out
+
+With keep-awake enabled and the selected device eligible:
+
+- **Pause switches Spotify to the silent track**, rather than leaving Spotify
+  paused. DJDad retains the paused tile's original song and position.
+- **Resume explicitly restores that song at the saved position**, subject to
+  Spotify Connect timing; it must not merely resume the silent track.
+- **Stop clears the active tile but starts or continues silent Spotify
+  playback. Stop does not stop Spotify while this mode is active.**
+
+Automatic idle playback also preserves a locally paused tile. It can, however,
+replace the Spotify playback context of a song paused outside DJDad. DJDad
+cannot export or restore Spotify's remote queue; the saved local tile/position
+is not a queue backup. The paused playback snapshot is in memory, not stored in
+the library: reloading the page does not retain that temporary resume position.
+
+Uncheck **Keep iPad Spotify awake** to stop renewal and restore normal Pause/Stop
+behavior. Normal behavior also applies when the selected output is ineligible.
+Disabling requests a pause only if fresh state confirms that the current track
+on the intended device is silence started by this app; it leaves unrelated
+playback alone. A failed or unconfirmed pause still needs checking in Spotify.
+Opting out does not reset sign-in, settings, library data or edits.
+
+### Foreground renewal and limits
+
+The app reads the track's actual reported duration and requests a restart near
+its natural end only while visible and still eligible. It does not enable
+Spotify's global Repeat One or issue repeat/queue-management commands. Repeat
+must remain confirmed Off.
+
+Renewal stops on hiding or leaving the page (`pagehide`). A page cannot guarantee
+background JavaScript execution, and a closed page cannot renew playback.
+Stopping a timer cannot recall a remote play command already issued.
+**Closing, locking or backgrounding
+the app does not guarantee silence or stop Spotify.** If a restart is missed,
+Spotify's queue or Autoplay can start other audio after the track ends. The app
+does not mix or overlap tracks, and a successful provider command does not
+acoustically verify that the audio is silent. Check Spotify/device controls
+directly when stopping audio matters.
+
+Missing/offline iPads, restricted devices, unavailable catalog content and
+provider denials are recoverable errors, not reasons to log out or clear data.
+Keep the app visible, open Spotify on the intended device, refresh/reselect it
+and use **Retry** after addressing the reported cause. If repeat is the blocker,
+turn it Off in Spotify yourself. Respect any rate-limit wait; repeated retries
+do not fix provider eligibility or quota restrictions.
+
+### Safe manual acceptance check
+
+This is an optional user-run check with your own eligible account/device, not an
+automated test or a claim that it has passed. Do not make real Spotify playback
+a test-suite side effect.
+
+1. Use a safe listening level set directly on the device/Spotify. Confirm the
+   intended output is present in Spotify and selected in DJDad, with `iPad` in
+   its name. Confirm repeat is Off and review the queue/Autoplay risk first;
+   remain able to stop unexpected audio directly.
+2. Keep the controller visible in the foreground and the screen unlocked.
+   Check the reported track duration and observe idle silence through a near-end
+   restart for longer than one complete track cycle, not merely two minutes
+   (for a ten-minute track, continue beyond ten minutes).
+3. Confirm an already-playing song is not automatically replaced. Test **Pause**
+   and **Resume** with a library tile: silence should run while the tile remains
+   paused, then the original song should return at its retained position.
+   Test **Stop** separately: the tile clears, but silent Spotify playback remains.
+4. Disable the setting and verify the app-owned silence pauses if Spotify state
+   confirms it is still current. Verify normal Pause/Stop behavior while off,
+   the opt-out survives reload, and a nonmatching selected output is not
+   automatically kept awake. No sign-in or library reset should be needed.
+5. For any failure, note the exact displayed status/error and HTTP status if
+   shown, whether the selected device remained listed, and whether the page was
+   visible. Redact account/device names, identifiers and authentication details;
+   do not attach personal libraries, browser storage or unreviewed logs.
+
+Longer success on one device still does not establish behavior on other
+iPads/browsers or while locked/backgrounded. Use mock Spotify responses for
+automated regressions; these do not establish real-device reachability or
+acoustic silence.
 
 ## Full screen and Home Screen help
 
@@ -182,6 +299,8 @@ Spotify mixing/overlap or public/business-playback software.
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
 | No device / Spotify 404 | Activate Spotify, refresh/reselect the device, and check track availability |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
+| iPad keep-awake unavailable/failed | Check the selected name contains `iPad`, device presence/restrictions, valid authorization and repeat Off; keep the page visible and Retry after resolving the reported cause, without logout/reset |
+| Spotify keeps playing after Stop | With eligible keep-awake enabled, Stop clears the tile but leaves silent playback running; disable the setting and confirm Spotify pauses, or stop directly in Spotify |
 | Import rejected | Preserve the original; schema or integrity may be unsupported |
 | File grayed out in the picker | Refresh to load the unfiltered chooser; if it remains unavailable, download a local copy through your file manager/provider. Do not rename or reset app data to bypass this. |
 | Recovery write failed | Keep the tab open and export before reloading or clearing any data |

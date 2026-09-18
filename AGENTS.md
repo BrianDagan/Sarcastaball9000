@@ -99,5 +99,20 @@ Use the shared volume-capability guard for every live volume/fade path. iPad/iPh
 controllers must not send volume commands; hide unusable controls without losing
 stored values or end-cue pauses. Fullscreen state must follow browser events;
 unsupported browsers get the accessible, browser-selected Home Screen help tabs.
+
+Automatic iPad idle silence is gated by the selected Spotify device name
+containing `iPad` (case-insensitive), never controller/UA or all Apple outputs.
+Keep `in-ipad-keepalive` default-on when `s9000.ipadKeepAlive` is absent, with
+persistent opt-out. Require visibility, valid auth, fresh eligible/unrestricted
+device state and repeat confirmed Off; automatic idle must not replace playing
+music. Eligible Pause and Stop switch to silence; Stop clears the tile, not
+Spotify playback. Pause retains the original tile/position for explicit Resume.
+Use the catalog track's reported duration for visible-only near-end renewal;
+no Repeat One, repeat/queue-management, volume/fade or database changes.
+Stop renewal on hidden/pagehide; opt-out pauses only freshly confirmed app-owned
+silence. Never reset auth/data on failure or promise background execution,
+acoustic silence or no audio after the track ends. Keep the local feature
+contract and safe manual checks in `guides/configuration.md` accurate.
+
 Spotify control is best-effort, not sample-accurate or background-safe. Do not add
 Spotify mixing/overlap or public/business-playback features.

@@ -81,6 +81,7 @@
   </header>
 
   <div id="transport-status" class="hidden" role="alert"></div>
+  <div id="ipad-keepalive-status" class="hidden" role="status"></div>
 
   <main id="grid-container">
     <div id="grid"></div>
@@ -201,6 +202,8 @@
 
       <section>
         <h3>Playback</h3>
+        <label><input id="in-ipad-keepalive" type="checkbox" /> Keep iPad Spotify awake</label>
+        <p class="hint">Automatic only for the selected Spotify device whose name contains "iPad". While this page is visible, idle playback, Pause and Stop use the ten-minute silence track. Resume restores your paused song. Turn this off to stop idle silence. Keep Repeat off in Spotify; queue or Autoplay settings can still play other audio after the last silence track ends. Closing or hiding this page stops renewal, not necessarily Spotify playback.</p>
         <p id="volume-support-hint" class="hint hidden">Browser volume and volume fades are unavailable on iPad/iPhone or a device that disallows them. Use physical or Spotify volume controls. Saved values are retained, and end cues still stop playback.</p>
         <label>Default volume: <span id="vol-label">70</span>%
           <input id="in-volume" type="range" min="0" max="100" step="1" value="70" class="full-width" />

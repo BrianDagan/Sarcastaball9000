@@ -755,19 +755,22 @@ body.vol-open #grid { padding-right: 64px; }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 body { display: flex; flex-direction: column; }
-#transport-status { flex: none; padding: 8px; max-height: 25dvh; overflow-y: auto; background: var(--surface-2); color: var(--text); border-bottom: 2px solid var(--c1); }
-#transport-status button {
+#transport-status, #ipad-keepalive-status { flex: none; padding: 8px; max-height: 25dvh; overflow-y: auto; background: var(--surface-2); color: var(--text); border-bottom: 2px solid var(--c1); }
+#ipad-keepalive-status { border-bottom-color: var(--accent); font-size: 13px; }
+#transport-status button, #ipad-keepalive-status button {
   margin-left: 8px; padding: 6px 12px;
   background: var(--surface); color: var(--text);
   border: 1px solid var(--text-dim); border-radius: 6px;
   font-weight: 600;
 }
 #transport-status button:hover,
-#transport-status button:focus-visible {
+#transport-status button:focus-visible,
+#ipad-keepalive-status button:hover,
+#ipad-keepalive-status button:focus-visible {
   background: #38383a; border-color: var(--text);
 }
-#transport-status button:active { background: var(--bg); }
-#transport-status button:focus-visible {
+#transport-status button:active, #ipad-keepalive-status button:active { background: var(--bg); }
+#transport-status button:focus-visible, #ipad-keepalive-status button:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 #topbar { flex: none; flex-wrap: wrap; }

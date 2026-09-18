@@ -75,6 +75,7 @@ const LS_FADE_IN = "s9000.fadeInSec";   // default fade-in duration in seconds
 const LS_FADE_OUT = "s9000.fadeOutSec"; // default fade-out duration in seconds (also used at a song's end cue)
 const LS_PENDING = "s9000.pending";  // unsaved edits: {colors: {pbUUID: color}, deletes: [pbUUID]}
 const LS_TRACK_PLAYED = "s9000.trackPlayed";  // "1"/"0": whether playing a song marks it as played
+const LS_IPAD_KEEPALIVE = "s9000.ipadKeepAlive";
 
 // IndexedDB is a larger browser storage area. We use it to stash a copy of the
 // loaded SQLite database so you don't have to re-pick the file on every visit.
@@ -431,6 +432,8 @@ function installDatabase(candidate, identity, edits, baseline, active = false) {
     `Loaded: ${groups.length} tabs, ${queryAll("SELECT COUNT(*) c FROM Playback")[0].c} buttons`;
   document.getElementById("db-status").className = "status ok";
   requestWakeLock();
+  idleBlocked = false;
+  scheduleIdleCheck();
 }
 
 async function loadDbFromBytes(bytes, requestSequence = ++importSequence) {
@@ -454,7 +457,10 @@ async function loadDbFromBytes(bytes, requestSequence = ++importSequence) {
     return true;
   } finally {
     candidate?.close();
-    if (requestSequence === importSequence) databaseImporting = false;
+    if (requestSequence === importSequence) {
+      databaseImporting = false;
+      scheduleIdleCheck();
+    }
   }
 }
 
@@ -895,6 +901,7 @@ function bindTaps(cell) {
   const TAP_WINDOW = 280;
   cell.addEventListener("click", (e) => {
     e.preventDefault();
+    cancelIdleCheck();
     setFocusedCell(cell);
     tapCount++;
     if (timer) clearTimeout(timer);
@@ -1458,11 +1465,13 @@ function assertPlaybackCapabilities(path, opts) {
   }
 }
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, requestCurrent = null) {
   assertPlaybackCapabilities(path, opts);
+  if (requestCurrent && !requestCurrent()) throw new Error("Playback request was superseded.");
   const generation = authGeneration;
   const tok = await getAccessToken();
   assertAuthGeneration(generation);
+  if (requestCurrent && !requestCurrent()) throw new Error("Playback request was superseded.");
   assertPlaybackCapabilities(path, opts);
   const savedAuth = localStorage.getItem(LS_AUTH);
   const r = await spotifyFetch(API + path, {
@@ -1503,6 +1512,279 @@ let stopDeadlineKey = null;
 let reconcileTimer = null;
 let volumeSequence = 0;
 let volumeFineThrottle = null;
+const IDLE_SILENCE_TRACK = "3mkOlbSv5RYadx0JsjTrKq";
+const IDLE_CHECK_MS = 30000;
+const IDLE_RENEW_BEFORE_MS = 15000;
+let idlePlayback = null;
+let idlePendingDevice = null;
+let idleResume = null;
+let idleTrack = null;
+let idleTimer = null;
+let idleNextCheckAt = 0;
+let idleGeneration = 0;
+let idleCheckPromise = null;
+let idleBlocked = false;
+let idleFailure = null;
+let idleReady = false;
+let idlePageActive = true;
+
+function idleEnabled() {
+  try { return localStorage.getItem(LS_IPAD_KEEPALIVE) !== "0"; }
+  catch {
+    idleBlocked = true;
+    idleFailure = "Keep-awake settings could not be read. Check browser storage permissions; no app data was reset.";
+    return false;
+  }
+}
+
+function isIdleDevice(device) {
+  return typeof device?.id === "string" && device.id.length > 0 &&
+    typeof device.name === "string" && /ipad/i.test(device.name) && !device.is_restricted;
+}
+
+function idleForeground() {
+  return idleEnabled() && idlePageActive && !erasingBrowser && !databaseImporting && !browserCleanupActive() &&
+    document.visibilityState === "visible" && !!getAuth()?.refreshToken && !confettiState;
+}
+
+function cancelIdleCheck() {
+  idleGeneration++;
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  idleNextCheckAt = 0;
+}
+
+function clearIdlePlayback(clearResume = false) {
+  cancelIdleCheck();
+  idlePlayback = null;
+  idlePendingDevice = null;
+  if (clearResume) idleResume = null;
+  updateIdleControls();
+}
+
+function updateIdleControls() {
+  const enabled = idleEnabled();
+  const checkbox = document.getElementById("in-ipad-keepalive");
+  if (checkbox) checkbox.checked = enabled;
+  const status = document.getElementById("ipad-keepalive-status");
+  if (!status) return;
+  const focusedAction = status.contains(document.activeElement) ? document.activeElement.dataset.idleAction : null;
+  const restoreFocus = () => {
+    if (!focusedAction) return;
+    const control = Array.from(status.querySelectorAll("button")).find(button => button.dataset.idleAction === focusedAction);
+    (control || document.getElementById(nowPlaying ? "np-pause" : "btn-settings"))?.focus({ preventScroll: true });
+  };
+  status.replaceChildren();
+  status.classList.toggle("hidden", !idlePlayback && !idleFailure);
+  if (!idlePlayback && !idleFailure) { restoreFocus(); return; }
+  const text = document.createElement("span");
+  const idleMessage = nowPlaying?.paused ? "Song paused. Idle silence is keeping Spotify awake." : "Idle silence is keeping Spotify awake.";
+  text.textContent = idleFailure || (enabled ? idleMessage : "Keep-awake is off. Spotify may still be playing the last silence track.");
+  status.appendChild(text);
+  if (idleFailure && enabled) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.dataset.idleAction = "retry";
+    retry.textContent = "Retry";
+    retry.onclick = () => {
+      idleBlocked = false;
+      idleFailure = null;
+      void checkIdlePlayback();
+    };
+    status.appendChild(retry);
+  }
+  if (enabled) {
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.dataset.idleAction = "disable";
+    stop.textContent = "Disable keep-awake";
+    stop.onclick = () => { void setIdleEnabled(false); };
+    status.appendChild(stop);
+  }
+  restoreFocus();
+}
+
+function reportIdleFailure(error) {
+  idleBlocked = true;
+  clearTimeout(idleTimer);
+  idleTimer = null;
+  idleFailure = `Idle silence was not confirmed. ${error.message} Playback and saved app data have not been reset.`;
+  updateIdleControls();
+}
+
+function scheduleIdleCheck(delay = idlePlayback ? IDLE_RENEW_BEFORE_MS : IDLE_CHECK_MS) {
+  if (!idleReady || idleBlocked || !idleForeground() || (nowPlaying && !nowPlaying.paused)) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+    idleNextCheckAt = 0;
+    if (idleFailure) updateIdleControls();
+    return;
+  }
+  const due = performance.now() + Math.max(1000, delay);
+  if (idleTimer && idleNextCheckAt <= due) return;
+  clearTimeout(idleTimer);
+  idleNextCheckAt = due;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    idleNextCheckAt = 0;
+    void checkIdlePlayback();
+  }, Math.max(1000, delay));
+}
+
+function isSilenceState(state) {
+  return state?.item?.id === IDLE_SILENCE_TRACK || state?.item?.linked_from?.id === IDLE_SILENCE_TRACK ||
+    (idleTrack && state?.item?.id === idleTrack.id);
+}
+
+async function loadIdleTrack(current) {
+  if (idleTrack) return idleTrack;
+  const track = await api(`/tracks/${IDLE_SILENCE_TRACK}`, {}, current);
+  if (!current()) return null;
+  if (typeof track?.id !== "string" || !track.id ||
+      (track.id !== IDLE_SILENCE_TRACK && track.linked_from?.id !== IDLE_SILENCE_TRACK) ||
+      track?.is_playable === false || !Number.isFinite(track?.duration_ms) ||
+      track.duration_ms <= IDLE_RENEW_BEFORE_MS * 2) {
+    throw new Error("The selected silence track is unavailable or its duration cannot be verified.");
+  }
+  idleTrack = { id: track.id, durationMs: track.duration_ms };
+  return idleTrack;
+}
+
+function idleStatePermitsPlayback(state, device) {
+  if (!state || !state.device?.id || typeof state.is_playing !== "boolean") {
+    throw new Error("Spotify's current playback state is unavailable. Open Spotify on the selected iPad, then retry.");
+  }
+  if (state.device.id !== device.id || !isIdleDevice(state.device) ||
+      (state.is_playing && !isSilenceState(state))) return false;
+  if (state.repeat_state !== "off") {
+    throw new Error("Turn Repeat off in Spotify before using idle silence; this app does not change Spotify's repeat setting.");
+  }
+  return true;
+}
+
+async function maintainIdlePlayback(current) {
+  if (!idleForeground() || idleBlocked || (nowPlaying && !nowPlaying.paused)) return false;
+  const epoch = idleGeneration;
+  const selectedId = activeDeviceId || localStorage.getItem(LS_DEVICE);
+  const generation = authGeneration;
+  const clientId = getAuth()?.clientId;
+  const live = () => current() && epoch === idleGeneration && idleForeground() &&
+    authGeneration === generation && getAuth()?.clientId === clientId && (!nowPlaying || nowPlaying.paused) &&
+    (!selectedId || !activeDeviceId || activeDeviceId === selectedId);
+  requireAuthLocks();
+  // Serialize independent visible tabs' probes, without holding the auth/erase lock.
+  return navigator.locks.request("s9000.idle-playback", { mode: "exclusive", ifAvailable: true }, async lock => {
+    if (!lock || !live()) return false;
+    const devices = await api("/me/player/devices", {}, live);
+    if (!live()) return false;
+    const device = (devices?.devices || []).find(item => selectedId ? item.id === selectedId : item.is_active);
+    if (!isIdleDevice(device)) {
+      if (selectedId && isIdleDevice(activeDeviceCapabilities) && !device) {
+        throw new Error("The selected iPad is unavailable. Open Spotify on that device, then retry.");
+      }
+      idlePlayback = null;
+      updateIdleControls();
+      return false;
+    }
+    let state = await api("/me/player", {}, live);
+    if (!live()) return false;
+    if (!idleStatePermitsPlayback(state, device)) {
+      idlePlayback = null;
+      updateIdleControls();
+      return false;
+    }
+    activeDeviceId = device.id;
+    activeDeviceCapabilities = device;
+    updateVolumeControls();
+    const hadMetadata = !!idleTrack;
+    const track = await loadIdleTrack(live);
+    if (!track || !live()) return false;
+    if (!hadMetadata) {
+      state = await api("/me/player", {}, live);
+      if (!live()) return false;
+      if (!idleStatePermitsPlayback(state, device)) return false;
+    }
+    const duration = isSilenceState(state) && Number.isFinite(state.item?.duration_ms) && state.item.duration_ms > IDLE_RENEW_BEFORE_MS * 2
+      ? state.item.duration_ms : track.durationMs;
+    if (isSilenceState(state) && state.is_playing) {
+      if (!Number.isFinite(state.progress_ms)) throw new Error("Spotify did not return the silence track's progress.");
+      idlePlayback = { deviceId: device.id, durationMs: duration };
+      idleFailure = null;
+      updateIdleControls();
+      if (duration - state.progress_ms > IDLE_RENEW_BEFORE_MS) return true;
+    }
+    if (nowPlaying?.paused && playingSnapshot && !idleResume) {
+      idleResume = { uuid: nowPlaying.uuid, trackId: playingSnapshot.trackid, deviceId: device.id };
+    }
+    if (!live()) return false;
+    const pendingDevice = { deviceId: device.id };
+    idlePendingDevice = pendingDevice;
+    try {
+      await api(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, {
+        method: "PUT", body: JSON.stringify({ uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0 }),
+      }, live);
+    } finally {
+      if (idlePendingDevice === pendingDevice) idlePendingDevice = null;
+    }
+    if (!live()) return false;
+    idlePlayback = { deviceId: device.id, durationMs: track.durationMs };
+    idleFailure = null;
+    updateIdleControls();
+    return true;
+  });
+}
+
+async function tryIdlePlayback(current) {
+  const epoch = idleGeneration;
+  try { return await maintainIdlePlayback(current); }
+  catch (error) {
+    if (current() && epoch === idleGeneration && idleForeground()) reportIdleFailure(error);
+    return false;
+  }
+}
+
+function checkIdlePlayback() {
+  if (idleCheckPromise) return idleCheckPromise;
+  if (!idleForeground() || idleBlocked || transportPending || (nowPlaying && !nowPlaying.paused)) {
+    if (idleFailure) updateIdleControls();
+    return Promise.resolve(false);
+  }
+  let applied = false;
+  const task = queueTransport("Keep Spotify awake", async current => {
+    applied = await tryIdlePlayback(current);
+  }, () => { idleBlocked = false; void checkIdlePlayback(); }, false).then(ok => ok && applied);
+  idleCheckPromise = task;
+  void task.finally(() => {
+    if (idleCheckPromise === task) idleCheckPromise = null;
+    scheduleIdleCheck(idlePlayback ? Math.min(IDLE_CHECK_MS, IDLE_RENEW_BEFORE_MS) : IDLE_CHECK_MS);
+  });
+  return task;
+}
+
+async function setIdleEnabled(enabled) {
+  try { localStorage.setItem(LS_IPAD_KEEPALIVE, enabled ? "1" : "0"); }
+  catch { reportIdleFailure(new Error("The keep-awake setting could not be saved.")); return false; }
+  cancelIdleCheck();
+  idleBlocked = false;
+  idleFailure = null;
+  updateIdleControls();
+  if (enabled) return checkIdlePlayback();
+  const owned = idlePlayback || idlePendingDevice;
+  if (!owned) return true;
+  return queueTransport("Stop idle silence", async current => {
+    const state = await api("/me/player", {}, current);
+    if (!current()) return;
+    if (state?.device?.id === owned.deviceId && isSilenceState(state) && state.is_playing) {
+      await api(`/me/player/pause?device_id=${encodeURIComponent(owned.deviceId)}`, { method: "PUT" }, current);
+    }
+    if (current()) clearIdlePlayback();
+  }, () => setIdleEnabled(false));
+}
+
+function wireIdlePlaybackControls() {
+  document.getElementById("in-ipad-keepalive").onchange = event => { void setIdleEnabled(event.target.checked); };
+  updateIdleControls();
+}
 
 function reportTransportFailure(action, error, retry) {
   const status = document.getElementById("transport-status");
@@ -1521,7 +1803,14 @@ function reportTransportFailure(action, error, retry) {
 
 function queueTransport(action, operation, retry, intent = true) {
   const generation = intent ? ++transportGeneration : transportGeneration;
-  if (intent) { transportPending = true; transportIntentKind = action; cancelFade(); }
+  if (intent) {
+    transportPending = true;
+    transportIntentKind = action;
+    cancelFade();
+    cancelIdleCheck();
+    idleBlocked = false;
+    idleFailure = null;
+  }
   const current = () => generation === transportGeneration && !erasingBrowser;
   const task = transportQueue.then(async () => {
     if (!current()) return false;
@@ -1531,10 +1820,13 @@ function queueTransport(action, operation, retry, intent = true) {
       if (intent) document.getElementById("transport-status").classList.add("hidden");
       return true;
     } catch (error) {
-      if (current()) reportTransportFailure(action, error, retry);
+      if (current()) {
+        if (intent) idleBlocked = true;
+        reportTransportFailure(action, error, retry);
+      }
       return false;
     } finally {
-      if (current() && intent) { transportPending = false; armStopDeadline(); }
+      if (current() && intent) { transportPending = false; armStopDeadline(); scheduleIdleCheck(); }
     }
   });
   transportQueue = task.then(() => {});
@@ -1542,6 +1834,11 @@ function queueTransport(action, operation, retry, intent = true) {
 }
 
 function invalidateTransportWork() {
+  clearIdlePlayback(true);
+  idleTrack = null;
+  idleBlocked = true;
+  idleFailure = null;
+  updateIdleControls();
   transportGeneration++;
   volumeSequence++;
   transportPending = false;
@@ -1602,6 +1899,12 @@ async function reconcilePlayback() {
   try {
     const state = await api("/me/player");
     if (generation !== transportGeneration || progress !== observed || transportPending || !nowPlaying) return false;
+    if (isSilenceState(state) && state.device?.id === idleResume?.deviceId && nowPlaying.paused && idleResume?.uuid === nowPlaying.uuid) {
+      idlePlayback = { deviceId: state.device.id, durationMs: state.item.duration_ms };
+      updateIdleControls();
+      scheduleIdleCheck();
+      return true;
+    }
     if (!state || state.item?.id !== playingSnapshot?.trackid) {
       cancelFade();
       invalidateTransportWork();
@@ -1625,6 +1928,7 @@ async function reconcilePlayback() {
       if (!progress.paused) scheduleProgressTick();
     }
     updatePauseBtn();
+    scheduleIdleCheck();
     return true;
   } catch (error) {
     if (generation === transportGeneration) reportTransportFailure("Playback refresh", error, reconcilePlayback);
@@ -1633,7 +1937,25 @@ async function reconcilePlayback() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && nowPlaying) void reconcilePlayback();
+  cancelIdleCheck();
+  if (document.visibilityState === "visible") {
+    if (nowPlaying) void reconcilePlayback();
+    if (idleReady) {
+      idleBlocked = false;
+      void checkIdlePlayback();
+    }
+  }
+});
+window.addEventListener("pagehide", () => {
+  idlePageActive = false;
+  cancelIdleCheck();
+});
+window.addEventListener("pageshow", event => {
+  idlePageActive = true;
+  if (event.persisted && idleReady && document.visibilityState === "visible") {
+    idleBlocked = false;
+    void checkIdlePlayback();
+  }
 });
 
 async function ensureDevice() {
@@ -1724,6 +2046,7 @@ async function startPlayback(cell) {
     } catch (error) { setLatency(performance.now() - t0, false); throw error; }
     if (!current()) return;
     setLatency(performance.now() - t0);
+    clearIdlePlayback(true);
     setNowPlaying(snapshot);
     document.querySelectorAll(".cell").forEach(tile => {
       if (tile.dataset.pbuuid === snapshot.dataset.pbuuid) tile.classList.add("playing");
@@ -1813,6 +2136,7 @@ async function pausePlayback() {
     await api("/me/player/pause", { method: "PUT" });
     if (!current()) return;
     setPlaybackPaused(true);
+    await tryIdlePlayback(current);
   }, pausePlayback);
 }
 
@@ -1826,8 +2150,15 @@ async function resumePlayback() {
       await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid));
     }
     if (!current()) return;
-    await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, { method: "PUT" });
+    const restore = idleResume?.uuid === nowPlaying.uuid ? {
+      uris: [`spotify:track:${idleResume.trackId}`],
+      position_ms: Math.max(0, Math.min(progress?.durationMs || Infinity, Math.round(currentPositionMs()))),
+    } : null;
+    await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
+      method: "PUT", ...(restore ? { body: JSON.stringify(restore) } : {}),
+    });
     if (!current() || !nowPlaying) return;
+    clearIdlePlayback(true);
     setPlaybackPaused(false);
   }, resumePlayback);
 }
@@ -1849,7 +2180,10 @@ function setBallSpin(on) {
 async function stopPlayback() {
   return queueTransport("Stop", async current => {
     await api("/me/player/pause", { method: "PUT" });
-    if (current()) setNowPlaying(null);
+    if (!current()) return;
+    clearIdlePlayback(true);
+    setNowPlaying(null);
+    await tryIdlePlayback(current);
   }, stopPlayback);
 }
 
@@ -4368,8 +4702,11 @@ async function refreshDevices(listId = "device-list") {
       btn.textContent = d.is_restricted ? "Control unavailable" : "Use";
       btn.disabled = !!d.is_restricted;
       btn.onclick = async () => {
-        try {
+        const transferred = await queueTransport("Device transfer", async current => {
           await api("/me/player", { method: "PUT", body: JSON.stringify({ device_ids: [d.id], play: false }) });
+          if (!current()) return;
+          clearIdlePlayback(true);
+          setNowPlaying(null);
           localStorage.setItem(LS_DEVICE, d.id);
           localStorage.setItem(LS_DEVICE_NAME, d.name);
           activeDeviceId = d.id;
@@ -4377,9 +4714,10 @@ async function refreshDevices(listId = "device-list") {
           updateVolumeControls();
           setDevicePill(d.name);
           closeDevicePicker();
-          refreshDevices("device-list");
-        } catch (e) {
-          showToast(`Device transfer was not confirmed. ${e.message}`);
+        }, () => btn.click());
+        if (transferred) {
+          void refreshDevices("device-list");
+          void checkIdlePlayback();
         }
       };
       div.appendChild(left); div.appendChild(btn);
@@ -4537,6 +4875,7 @@ function clearErasedBrowserView(preserveCurrentSettings = false) {
   }
   setDevicePill(null);
   updateVolumeControls();
+  updateIdleControls();
 }
 
 async function eraseBrowserData() {
@@ -4718,6 +5057,12 @@ window.addEventListener("storage", e => {
       document.getElementById("auth-status").textContent = error.message;
       document.getElementById("auth-status").className = "status err";
     }
+  } else if (e.key === LS_IPAD_KEEPALIVE) {
+    cancelIdleCheck();
+    idleBlocked = false;
+    idleFailure = null;
+    updateIdleControls();
+    if (idleReady && idleEnabled()) void checkIdlePlayback();
   }
 });
 
@@ -4769,7 +5114,7 @@ async function playFakeBeer() {
   // raw API call that the progress bar doesn't track. Clear the now-playing
   // state so the stale progress bar disappears instead of pretending the old
   // song is still going.
-  setNowPlaying(null);
+  invalidateTransportWork();
   startConfetti();
   try {
     const dev = await ensureDevice();
@@ -4892,6 +5237,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   wireVolRail();
   updateVolumeControls();
   wireFullscreenControls();
+  wireIdlePlaybackControls();
 
   // wire buttons
   document.getElementById("btn-settings").onclick = () => showModal(true);
@@ -5245,7 +5591,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     showModal(true);
   }
   updateAuthButtons();
+  idleReady = true;
   if (getAuth() && getAuth().refreshToken) {
-    if (await tryAuthHandshake()) refreshDevices();
+    if (await tryAuthHandshake()) {
+      await refreshDevices();
+      idleBlocked = false;
+      await checkIdlePlayback();
+    }
   }
 });

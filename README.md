@@ -85,6 +85,12 @@ browser requirements and troubleshooting.
   credentials through callback URLs or library exports.
 - Playback, fades and end cues are best-effort network controls. Keep the
   controller visible and check Spotify directly when a command is uncertain.
+- **Keep iPad Spotify awake** is enabled by default for selected Spotify devices
+  whose names contain `iPad`. While visible, idle time, Pause and Stop use a silent
+  track instead of leaving Spotify paused; Resume restores the paused tile.
+  Disable it in Setup for normal Pause/Stop behavior. Keep Spotify Repeat off;
+  queue/Autoplay behavior after leaving the page is not controlled by this mode.
+  See [idle playback and its limits](guides/configuration.md#automatic-ipad-idle-silence).
 - Public source and site assets are discoverable. `noindex, nofollow` and
   Spotify allowlisting do not provide website authorization.
 
