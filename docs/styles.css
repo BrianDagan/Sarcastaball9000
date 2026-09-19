@@ -277,6 +277,8 @@ body.vol-open #grid { padding-right: 64px; }
 
 .cell {
   position: relative;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
   aspect-ratio: 1.4 / 1;
   border-radius: 12px;
   background: var(--c-default);

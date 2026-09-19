@@ -101,6 +101,8 @@ stored values or end-cue pauses. Fullscreen state must follow browser events;
 unsupported browsers get the accessible, browser-selected Home Screen help tabs.
 Keep routine keep-awake state in the fixed-size toolbar icon, not a layout-shifting
 banner. Mirror toolbar/Settings switches and preserve actionable error reporting.
+Tile touch-and-hold must open editing without a release click playing a song or
+activating a menu item. Preserve scrolling, pinch zoom and ordinary multi-tap actions.
 
 Automatic iPad idle silence is gated by the selected Spotify device name
 containing `iPad` (case-insensitive), never controller/UA or all Apple outputs.

@@ -122,6 +122,24 @@ files or unrelated origin storage. It does not revoke the Spotify grant or
 guarantee remote audio stops. Check Spotify/device controls directly and use
 Spotify account settings if you also want to revoke the grant.
 
+### Editing an existing track on iPad
+
+Touch and hold a song tile without moving for about half a second, then lift your
+finger. Its action menu offers **Rename song**, **Copy song**, **Set hotkey**,
+played/unplayed marking, deletion and moves to other tabs. Opening that menu does
+not play or pause the song; tap an action separately after lifting your finger.
+This is the same right-click context menu used with a mouse, not a separate edit
+dialog or an immediate Rename action.
+Moving to scroll, canceling the touch or leaving the page cancels a pending hold.
+Ordinary short taps and configured double/triple taps retain their playback actions.
+
+An attached mouse/trackpad can use a secondary click. With keyboard focus on a
+tile, the Context Menu key or Shift+F10 opens the same menu where the browser
+delivers those keys. Press Escape or tap outside to dismiss it.
+
+The visible app/browser-tab title is **Sarcastaball**. Repository references,
+browser-storage identifiers and database/export filenames remain unchanged.
+
 ## Automatic iPad idle silence
 
 This section describes the local feature contract for builds with **Settings ->

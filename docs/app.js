@@ -204,6 +204,7 @@ function clearDatabaseState() {
   baselineActive = false;
   databaseImporting = saveInProgress = false;
   focusedCell = null;
+  contextMenuReturnFocus = null;
   workingRevision++;
 }
 
@@ -685,26 +686,111 @@ function setupTabDragScroll(tabs) {
 // =====================================================================
 // Long-press detection (for touch/iOS) — fires after 500ms of stationary press
 // =====================================================================
-function bindLongPress(el, handler) {
+function bindLongPress(el, handler, { onStart, onCancel, suppressClick = false } = {}) {
   let timer = null;
+  let pointerId = null;
+  let fired = false;
+  let releaseGuard = null;
   let startX = 0, startY = 0;
-  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
-  el.addEventListener("pointerdown", (e) => {
-    if (e.pointerType === "mouse") return;  // mouse uses contextmenu
+  const guardReleaseClick = id => {
+    releaseGuard?.();
+    let expiry = null;
+    const clear = () => {
+      clearTimeout(expiry);
+      document.removeEventListener("click", swallow, true);
+      document.removeEventListener("pointerdown", nextPress, true);
+      document.removeEventListener("pointerup", released, true);
+      document.removeEventListener("pointercancel", released, true);
+      window.removeEventListener("pagehide", clear);
+      if (releaseGuard === clear) releaseGuard = null;
+    };
+    const swallow = event => {
+      if (event.detail === 0 && !event.pointerType) return;
+      if (event.pointerId > 0 && event.pointerId !== id) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      clear();
+    };
+    const nextPress = event => { if (event.isPrimary !== false) clear(); };
+    const released = event => {
+      if (event.pointerId !== id) return;
+      clearTimeout(expiry);
+      expiry = setTimeout(clear, 1000);
+    };
+    releaseGuard = clear;
+    // The menu can appear beneath the finger, so guard the document rather
+    // than only the tile. A fresh pointerdown still permits the next real tap.
+    document.addEventListener("click", swallow, true);
+    document.addEventListener("pointerdown", nextPress, true);
+    document.addEventListener("pointerup", released, true);
+    document.addEventListener("pointercancel", released, true);
+    window.addEventListener("pagehide", clear);
+  };
+  const finish = canceled => {
+    if (pointerId === null) return;
+    const id = pointerId;
+    clearTimeout(timer);
+    timer = null;
+    pointerId = null;
+    document.removeEventListener("pointermove", moved, true);
+    document.removeEventListener("pointerup", ended, true);
+    document.removeEventListener("pointercancel", ended, true);
+    document.removeEventListener("pointerdown", additionalPointer, true);
+    document.removeEventListener("visibilitychange", visibilityChanged);
+    window.removeEventListener("blur", interrupted);
+    window.removeEventListener("pagehide", interrupted);
+    if (canceled) {
+      if (suppressClick && !releaseGuard) guardReleaseClick(id);
+      onCancel?.();
+    }
+  };
+  const fire = () => {
+    if (pointerId === null || fired) return;
+    if (!el.isConnected || document.visibilityState === "hidden") { finish(true); return; }
+    clearTimeout(timer);
+    timer = null;
+    fired = true;
+    if (suppressClick) guardReleaseClick(pointerId);
+    handler(startX, startY);
+  };
+  const moved = event => {
+    if (event.pointerId !== pointerId) return;
+    if (Math.abs(event.clientX - startX) > 8 || Math.abs(event.clientY - startY) > 8) finish(true);
+  };
+  const ended = event => {
+    if (event.pointerId === pointerId) finish(event.type === "pointercancel");
+  };
+  const additionalPointer = event => {
+    if (event.pointerType !== "mouse" && event.pointerId !== pointerId) finish(true);
+  };
+  const interrupted = () => finish(true);
+  const visibilityChanged = () => { if (document.visibilityState === "hidden") finish(true); };
+  el.addEventListener("pointerdown", e => {
+    if (!["touch", "pen"].includes(e.pointerType) || e.button !== 0 || e.isPrimary === false) return;
+    finish(true);
+    pointerId = e.pointerId;
+    fired = false;
     startX = e.clientX; startY = e.clientY;
-    cancel();
-    timer = setTimeout(() => {
-      timer = null;
-      handler(startX, startY);
-    }, 500);
+    onStart?.();
+    document.addEventListener("pointermove", moved, true);
+    document.addEventListener("pointerup", ended, true);
+    document.addEventListener("pointercancel", ended, true);
+    document.addEventListener("pointerdown", additionalPointer, true);
+    document.addEventListener("visibilitychange", visibilityChanged);
+    window.addEventListener("blur", interrupted);
+    window.addEventListener("pagehide", interrupted);
+    timer = setTimeout(fire, 500);
   });
-  el.addEventListener("pointermove", (e) => {
-    if (!timer) return;
-    if (Math.abs(e.clientX - startX) > 8 || Math.abs(e.clientY - startY) > 8) cancel();
+  el.addEventListener("pointerleave", event => {
+    if (event.pointerId === pointerId && !fired) finish(true);
   });
-  el.addEventListener("pointerup",     cancel);
-  el.addEventListener("pointercancel", cancel);
-  el.addEventListener("pointerleave",  cancel);
+  return {
+    handleContextMenu() {
+      if (pointerId === null && !releaseGuard) return false;
+      fire();
+      return true;
+    },
+  };
 }
 
 function renderGrid() {
@@ -891,13 +977,30 @@ function fmtTime(secs) {
 // Double/triple tap fall back to AppSettings actions.
 // =====================================================================
 function bindTaps(cell) {
-  cell.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    setFocusedCell(cell);
-    showCellContextMenu(cell, e.clientX, e.clientY);
-  });
   let tapCount = 0;
   let timer = null;
+  const clearTapSequence = () => {
+    clearTimeout(timer);
+    timer = null;
+    tapCount = 0;
+  };
+  const openMenu = (x, y) => {
+    clearTapSequence();
+    setFocusedCell(cell);
+    showCellContextMenu(cell, x, y);
+    document.querySelector("#ctx-menu .ctx-item:not(:disabled)")?.focus({ preventScroll: true });
+  };
+  const touchMenu = bindLongPress(cell, openMenu, {
+    // Defer an earlier tap while the next touch may become a hold, but retain
+    // its count so ordinary double/triple taps still use their configured action.
+    onStart: () => { clearTimeout(timer); timer = null; },
+    onCancel: clearTapSequence,
+    suppressClick: true,
+  });
+  cell.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (!touchMenu.handleContextMenu()) openMenu(e.clientX, e.clientY);
+  });
   const TAP_WINDOW = 280;
   cell.addEventListener("click", (e) => {
     e.preventDefault();
@@ -906,8 +1009,10 @@ function bindTaps(cell) {
     tapCount++;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
+      timer = null;
       const n = tapCount;
       tapCount = 0;
+      if (!cell.isConnected) return;
       if (n === 1) {
         smartSingleTap(cell);
       } else {
@@ -3424,9 +3529,16 @@ function triggerDownload(bytes, filename) {
 // =====================================================================
 // Cell context menu (right-click)
 // =====================================================================
+let contextMenuReturnFocus = null;
 function hideCellContextMenu() {
   const m = document.getElementById("ctx-menu");
+  const restoreFocus = m?.contains(document.activeElement);
   if (m) m.classList.add("hidden");
+  if (restoreFocus) {
+    const target = contextMenuReturnFocus?.isConnected ? contextMenuReturnFocus : document.getElementById("btn-settings");
+    target?.focus({ preventScroll: true });
+  }
+  contextMenuReturnFocus = null;
 }
 
 // =====================================================================
@@ -3636,6 +3748,7 @@ function confirmDeleteCell(pbUUID) {
 }
 
 function showCellContextMenu(cell, x, y) {
+  contextMenuReturnFocus = cell;
   const menu = document.getElementById("ctx-menu");
   menu.innerHTML = "";
 
@@ -3752,6 +3865,7 @@ function newUuid() {
 }
 
 function showTabContextMenu(tabIdx, x, y) {
+  contextMenuReturnFocus = document.querySelectorAll("#tabs .tab")[tabIdx] || null;
   const menu = document.getElementById("ctx-menu");
   menu.innerHTML = "";
   const g = groups[tabIdx];
