@@ -1619,7 +1619,9 @@ let volumeSequence = 0;
 let volumeFineThrottle = null;
 const IDLE_SILENCE_TRACK = "3mkOlbSv5RYadx0JsjTrKq";
 const IDLE_CHECK_MS = 30000;
-const IDLE_RENEW_BEFORE_MS = 15000;
+const IDLE_PLAYBACK_CHECK_MS = 15000;
+const IDLE_RENEW_BEFORE_MS = 60000;
+const IDLE_MIN_DURATION_MS = 30000;
 let idlePlayback = null;
 let idlePendingDevice = null;
 let idleResume = null;
@@ -1737,7 +1739,22 @@ function reportIdleFailure(error) {
   updateIdleControls();
 }
 
-function scheduleIdleCheck(delay = idlePlayback ? IDLE_RENEW_BEFORE_MS : IDLE_CHECK_MS) {
+function recordIdlePlayback(deviceId, durationMs, progressMs, observedAt) {
+  if (!Number.isFinite(durationMs) || durationMs <= IDLE_MIN_DURATION_MS ||
+      !Number.isFinite(progressMs) || progressMs < 0) {
+    throw new Error("Spotify did not return a usable silence duration and progress.");
+  }
+  // A poll started before a confirmed restart must not restore the old deadline.
+  if (idlePlayback?.deviceId === deviceId && idlePlayback.observedAt > observedAt) return idlePlayback;
+  const headroom = Math.min(IDLE_RENEW_BEFORE_MS, durationMs / 4);
+  idlePlayback = {
+    deviceId, durationMs, observedAt,
+    renewAt: observedAt + Math.max(0, durationMs - progressMs) - headroom,
+  };
+  return idlePlayback;
+}
+
+function scheduleIdleCheck(delay = idlePlayback ? IDLE_PLAYBACK_CHECK_MS : IDLE_CHECK_MS) {
   if (!idleReady || idleBlocked || !idleForeground() || (nowPlaying && !nowPlaying.paused)) {
     clearTimeout(idleTimer);
     idleTimer = null;
@@ -1745,7 +1762,9 @@ function scheduleIdleCheck(delay = idlePlayback ? IDLE_RENEW_BEFORE_MS : IDLE_CH
     if (idleFailure) updateIdleControls();
     return;
   }
-  const due = performance.now() + Math.max(1000, delay);
+  const now = performance.now();
+  if (Number.isFinite(idlePlayback?.renewAt)) delay = Math.min(delay, idlePlayback.renewAt - now);
+  const due = now + Math.max(1000, delay);
   if (idleTimer && idleNextCheckAt <= due) return;
   clearTimeout(idleTimer);
   idleNextCheckAt = due;
@@ -1768,7 +1787,7 @@ async function loadIdleTrack(current) {
   if (typeof track?.id !== "string" || !track.id ||
       (track.id !== IDLE_SILENCE_TRACK && track.linked_from?.id !== IDLE_SILENCE_TRACK) ||
       track?.is_playable === false || !Number.isFinite(track?.duration_ms) ||
-      track.duration_ms <= IDLE_RENEW_BEFORE_MS * 2) {
+      track.duration_ms <= IDLE_MIN_DURATION_MS) {
     throw new Error("The selected silence track is unavailable or its duration cannot be verified.");
   }
   idleTrack = { id: track.id, durationMs: track.duration_ms };
@@ -1811,6 +1830,7 @@ async function maintainIdlePlayback(current) {
       updateIdleControls();
       return false;
     }
+    let observedAt = performance.now();
     let state = await api("/me/player", {}, live);
     if (!live()) return false;
     if (!idleStatePermitsPlayback(state, device)) {
@@ -1825,18 +1845,18 @@ async function maintainIdlePlayback(current) {
     const track = await loadIdleTrack(live);
     if (!track || !live()) return false;
     if (!hadMetadata) {
+      observedAt = performance.now();
       state = await api("/me/player", {}, live);
       if (!live()) return false;
       if (!idleStatePermitsPlayback(state, device)) return false;
     }
-    const duration = isSilenceState(state) && Number.isFinite(state.item?.duration_ms) && state.item.duration_ms > IDLE_RENEW_BEFORE_MS * 2
+    const duration = isSilenceState(state) && Number.isFinite(state.item?.duration_ms) && state.item.duration_ms > IDLE_MIN_DURATION_MS
       ? state.item.duration_ms : track.durationMs;
     if (isSilenceState(state) && state.is_playing) {
-      if (!Number.isFinite(state.progress_ms)) throw new Error("Spotify did not return the silence track's progress.");
-      idlePlayback = { deviceId: device.id, durationMs: duration };
+      const observed = recordIdlePlayback(device.id, duration, state.progress_ms, observedAt);
       idleFailure = null;
       updateIdleControls();
-      if (duration - state.progress_ms > IDLE_RENEW_BEFORE_MS) return true;
+      if (performance.now() < observed.renewAt) return true;
     }
     if (nowPlaying?.paused && playingSnapshot && !idleResume) {
       idleResume = { uuid: nowPlaying.uuid, trackId: playingSnapshot.trackid, deviceId: device.id };
@@ -1844,6 +1864,7 @@ async function maintainIdlePlayback(current) {
     if (!live()) return false;
     const pendingDevice = { deviceId: device.id };
     idlePendingDevice = pendingDevice;
+    const requestedAt = performance.now();
     try {
       await api(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, {
         method: "PUT", body: JSON.stringify({ uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0 }),
@@ -1852,7 +1873,8 @@ async function maintainIdlePlayback(current) {
       if (idlePendingDevice === pendingDevice) idlePendingDevice = null;
     }
     if (!live()) return false;
-    idlePlayback = { deviceId: device.id, durationMs: track.durationMs };
+    const confirmedAt = performance.now();
+    recordIdlePlayback(device.id, track.durationMs, confirmedAt - requestedAt, confirmedAt);
     idleFailure = null;
     updateIdleControls();
     return true;
@@ -1881,7 +1903,7 @@ function checkIdlePlayback() {
   idleCheckPromise = task;
   void task.finally(() => {
     if (idleCheckPromise === task) idleCheckPromise = null;
-    scheduleIdleCheck(idlePlayback ? Math.min(IDLE_CHECK_MS, IDLE_RENEW_BEFORE_MS) : IDLE_CHECK_MS);
+    scheduleIdleCheck();
   });
   return task;
 }
@@ -2025,12 +2047,17 @@ async function reconcilePlayback() {
   const generation = transportGeneration;
   const observed = progress;
   try {
+    const requestedAt = performance.now();
     const state = await api("/me/player");
     if (generation !== transportGeneration || progress !== observed || transportPending || !nowPlaying) return false;
     if (isSilenceState(state) && state.device?.id === idleResume?.deviceId && nowPlaying.paused && idleResume?.uuid === nowPlaying.uuid) {
-      idlePlayback = { deviceId: state.device.id, durationMs: state.item.duration_ms };
+      if (state.is_playing) {
+        const duration = Number.isFinite(state.item?.duration_ms) && state.item.duration_ms > IDLE_MIN_DURATION_MS
+          ? state.item.duration_ms : idleTrack?.durationMs;
+        recordIdlePlayback(state.device.id, duration, state.progress_ms, requestedAt);
+      }
       updateIdleControls();
-      scheduleIdleCheck();
+      scheduleIdleCheck(state.is_playing ? IDLE_PLAYBACK_CHECK_MS : 1000);
       return true;
     }
     if (!state || state.item?.id !== playingSnapshot?.trackid) {

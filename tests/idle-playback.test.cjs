@@ -61,6 +61,109 @@ function controller(t, name = "Synthetic iPad") {
   return app;
 }
 
+function installIdleClock(app) {
+  let now = 0, sequence = 0;
+  const timers = new Map();
+  app.window.performance.now = () => now;
+  app.window.setTimeout = (callback, delay = 0) => {
+    const id = ++sequence;
+    timers.set(id, { callback, at: now + Math.max(0, delay) });
+    return id;
+  };
+  app.window.clearTimeout = id => timers.delete(id);
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  return {
+    get now() { return now; },
+    wait(milliseconds) { return new Promise(resolve => app.window.setTimeout(resolve, milliseconds)); },
+    async advance(milliseconds) {
+      const end = now + milliseconds;
+      await settle();
+      for (let steps = 0; steps < 10000; steps++) {
+        const next = [...timers].filter(([, timer]) => timer.at <= end)
+          .sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next) {
+          now = end;
+          await settle();
+          return;
+        }
+        now = next[1].at;
+        timers.delete(next[0]);
+        next[1].callback();
+        await settle();
+      }
+      throw new Error("Synthetic idle timer loop did not settle");
+    },
+  };
+}
+
+for (const [getLatency, pausedTile] of [[0, false], [3000, false], [7000, false], [14000, false], [7000, true], [14000, true]]) {
+  test(`automatic renewal keeps silence alive for three cycles with ${getLatency}ms read latency${pausedTile ? " and a paused tile" : ""}`, async t => {
+    const app = controller(t);
+    const clock = installIdleClock(app);
+    if (pausedTile) {
+      app.tile();
+      app.run("setPlaybackPaused(true)");
+    }
+    let startedAt = null;
+    let naturalEnds = 0;
+    let checks = 0;
+    const durationsBeforeRestart = [];
+    app.window.testApi = async (url, options = {}, current) => {
+      assert.ok(!current || current());
+      const request = { path: url.split("?")[0], method: options.method || "GET" };
+      app.backend.requests.push(request);
+      const elapsed = startedAt === null ? 0 : clock.now - startedAt;
+      if (startedAt !== null && elapsed >= app.backend.duration) {
+        naturalEnds++;
+        startedAt = null;
+      }
+      if (request.path === "/me/player/devices") {
+        await clock.wait(getLatency);
+        return { devices: naturalEnds ? [] : [app.backend.device] };
+      }
+      if (request.path === "/me/player" && request.method === "GET") {
+        const state = naturalEnds ? null : {
+          device: app.backend.device,
+          item: { id: startedAt === null ? "synthetic-song" : SILENCE, duration_ms: startedAt === null ? 180000 : app.backend.duration },
+          is_playing: startedAt !== null, repeat_state: "off", progress_ms: startedAt === null ? 12000 : elapsed,
+        };
+        checks++;
+        await clock.wait(getLatency);
+        return state;
+      }
+      if (request.path === `/tracks/${SILENCE}`) {
+        await clock.wait(getLatency);
+        return { id: SILENCE, duration_ms: app.backend.duration, is_playable: true };
+      }
+      assert.equal(request.path, "/me/player/play");
+      assert.equal(request.method, "PUT");
+      assert.deepEqual(JSON.parse(options.body), { uris: [`spotify:track:${SILENCE}`], position_ms: 0 });
+      await clock.wait(2000);
+      if (startedAt !== null) durationsBeforeRestart.push(clock.now - startedAt);
+      startedAt = clock.now;
+      return null;
+    };
+    app.run("idleReady = true; void checkIdlePlayback()");
+    await clock.advance(3 * 600000 + 60000);
+    if (pausedTile) {
+      assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+      assert.equal(app.run("nowPlaying.paused"), true);
+      assert.equal(app.run("currentPositionMs()"), 12000);
+    }
+    app.run("idleReady = false; cancelIdleCheck(); setNowPlaying(null)");
+    await clock.advance(30000);
+    await app.run("transportQueue");
+    assert.equal(naturalEnds, 0, "The silence track must be renewed before its natural end");
+    assert.ok(durationsBeforeRestart.length >= 3, "The automatic timer, not a manual probe, must renew each cycle");
+    for (const duration of durationsBeforeRestart) {
+      assert.ok(duration >= 500000 && duration < 590000, `Restart after ${duration}ms must leave network headroom`);
+    }
+    assert.ok(checks < (pausedTile ? 450 : 160), "Renewal must not become a high-frequency polling loop");
+    assert.equal(app.run("idleBlocked"), false);
+    assert.equal(app.backend.requests.some(request => /repeat|queue|volume/.test(request.path)), false);
+  });
+}
+
 test("default idle behavior starts only on a freshly available selected iPad device", async t => {
   const app = controller(t, "Synthetic IPAD");
   assert.equal(await app.run("checkIdlePlayback()"), true);
@@ -210,15 +313,88 @@ test("renewal follows Spotify progress and actual duration across more than one 
   app.backend.duration = 660123;
   assert.equal(await app.run("checkIdlePlayback()"), true);
   for (let cycle = 0; cycle < 3; cycle++) {
-    app.backend.state.progress_ms = 640000;
+    app.backend.state.progress_ms = app.backend.duration - 61000;
     await app.run("checkIdlePlayback()");
     assert.equal(app.plays().length, cycle + 1);
-    app.backend.state.progress_ms = 650000;
+    app.backend.state.progress_ms = app.backend.duration - 59000;
     await app.run("checkIdlePlayback()");
     assert.equal(app.plays().length, cycle + 2);
     assert.equal(app.plays().at(-1).body.position_ms, 0);
   }
   assert.equal(app.backend.requests.filter(request => request.path === `/tracks/${SILENCE}`).length, 1);
+});
+
+test("the next check is pulled forward to the renewal deadline instead of another full polling interval", async t => {
+  const app = controller(t);
+  const clock = installIdleClock(app);
+  app.run("idleReady = true");
+  await app.run("checkIdlePlayback()");
+  app.backend.state.progress_ms = app.backend.duration - 66000;
+  await app.run("checkIdlePlayback()");
+  assert.equal(app.run("idleNextCheckAt"), clock.now + 6000);
+});
+
+test("a short silence track uses proportional headroom rather than restarting immediately", async t => {
+  const app = controller(t);
+  app.backend.duration = 32500;
+  await app.run("checkIdlePlayback()");
+  app.backend.state.progress_ms = 24000;
+  await app.run("checkIdlePlayback()");
+  assert.equal(app.plays().length, 1);
+  app.backend.state.progress_ms = 25000;
+  await app.run("checkIdlePlayback()");
+  assert.equal(app.plays().length, 2);
+});
+
+test("time spent waiting for a playback response is included in the renewal decision", async t => {
+  const app = controller(t);
+  const clock = installIdleClock(app);
+  await app.run("checkIdlePlayback()");
+  const realApi = app.window.testApi;
+  app.window.testApi = async (url, options) => {
+    if (url === "/me/player") {
+      const snapshot = structuredClone({ ...app.backend.state, device: app.backend.device });
+      await clock.wait(12000);
+      return snapshot;
+    }
+    return realApi(url, options);
+  };
+  app.backend.state.progress_ms = app.backend.duration - 66000;
+  const check = app.run("checkIdlePlayback()");
+  await clock.advance(12000);
+  assert.equal(await check, true);
+  assert.equal(app.plays().length, 2);
+});
+
+test("a delayed pre-renewal reconciliation cannot overwrite the new silence deadline", async t => {
+  const app = controller(t);
+  const clock = installIdleClock(app);
+  app.tile();
+  await app.run("pausePlayback()");
+  app.backend.state.progress_ms = app.backend.duration - 1000;
+  const staleState = structuredClone({ ...app.backend.state, device: app.backend.device });
+  const entered = deferred(), release = deferred();
+  const realApi = app.window.testApi;
+  let first = true;
+  app.window.testApi = async (url, options) => {
+    if (url === "/me/player" && first) {
+      first = false;
+      entered.resolve();
+      await release.promise;
+      return staleState;
+    }
+    return realApi(url, options);
+  };
+  const reconciliation = app.run("reconcilePlayback()");
+  await entered.promise;
+  await clock.advance(100);
+  await app.run("checkIdlePlayback()");
+  const deadline = app.run("idlePlayback.renewAt");
+  release.resolve();
+  assert.equal(await reconciliation, true);
+  assert.equal(app.run("idlePlayback.renewAt"), deadline);
+  await app.run("checkIdlePlayback()");
+  assert.equal(app.plays().length, 2);
 });
 
 test("hidden pages do not start or renew silence", async t => {

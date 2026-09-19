@@ -501,6 +501,71 @@ for (const durationMs of [32500, 251750]) {
   });
 }
 
+test("the visible page automatically renews through several full cycles despite slow state replies", async ({ page }) => {
+  await prepare(page, { keepAlive: false, ipad: true });
+  await page.clock.install();
+  await page.evaluate(() => {
+    const duration = 600000;
+    const device = { id: "synthetic-idle-device", name: "Synthetic iPad", is_restricted: false, supports_volume: false };
+    window.renewalTiming = { startedAt: null, naturalEnds: 0, restarts: [], commands: [] };
+    const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+    api = async (url, options = {}) => {
+      const path = url.split("?")[0];
+      const timing = window.renewalTiming;
+      const elapsed = timing.startedAt === null ? 0 : performance.now() - timing.startedAt;
+      if (timing.startedAt !== null && elapsed >= duration) {
+        timing.naturalEnds++;
+        timing.startedAt = null;
+      }
+      if (path === "/me/player/devices") {
+        await wait(7000);
+        return { devices: timing.naturalEnds ? [] : [device] };
+      }
+      if (path === "/me/player" && !options.method) {
+        const state = timing.naturalEnds ? null : {
+          device, repeat_state: "off", is_playing: timing.startedAt !== null, progress_ms: elapsed,
+          item: { id: timing.startedAt === null ? "synthetic-song" : IDLE_SILENCE_TRACK, duration_ms: duration },
+        };
+        await wait(7000);
+        return state;
+      }
+      if (path === `/tracks/${IDLE_SILENCE_TRACK}`) {
+        await wait(7000);
+        return { id: IDLE_SILENCE_TRACK, duration_ms: duration, is_playable: true };
+      }
+      if (path !== "/me/player/play" || options.method !== "PUT") throw new Error("Unexpected renewal command");
+      timing.commands.push({ path, body: JSON.parse(options.body) });
+      await wait(2000);
+      if (timing.startedAt !== null) timing.restarts.push(performance.now() - timing.startedAt);
+      timing.startedAt = performance.now();
+      return null;
+    };
+    localStorage.setItem(LS_IPAD_KEEPALIVE, "1");
+    idleBlocked = false;
+    void checkIdlePlayback();
+  });
+  // Move time normally, rather than invoking the idle checker or fast-forwarding
+  // past scheduled callbacks. Native Web Lock grants also get an event-loop turn.
+  for (let elapsed = 0; elapsed < 1860000; elapsed += 5000) await page.clock.runFor(5000);
+  await page.evaluate(() => { idleReady = false; cancelIdleCheck(); });
+  await page.clock.runFor(30000);
+  await page.evaluate(() => transportQueue);
+  const timing = await page.evaluate(() => window.renewalTiming);
+  expect(timing.naturalEnds).toBe(0);
+  expect(timing.restarts.length).toBeGreaterThanOrEqual(3);
+  for (const interval of timing.restarts) {
+    expect(interval).toBeGreaterThanOrEqual(500000);
+    expect(interval).toBeLessThan(590000);
+  }
+  for (const command of timing.commands) {
+    expect(command).toEqual({
+      path: "/me/player/play", body: { uris: [SILENCE_URI], position_ms: 0 },
+    });
+  }
+  await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
+  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "running");
+});
+
 test("hidden pages do not renew; returning visible makes a fresh foreground check", async ({ page }) => {
   const backend = await prepare(page);
   await expect.poll(() => plays(backend).length).toBe(1);

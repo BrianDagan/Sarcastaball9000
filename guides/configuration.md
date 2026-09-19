@@ -89,6 +89,12 @@ A manually requested Fade Out keeps its configured delayed stop even when it
 cannot ramp the volume. Supported desktop/device volume control remains available;
 genuine API failures are still reported.
 
+There is no automatic fade-on-pause in the iPad/iPhone controller configuration.
+Spotify plays the audio in its own app, and Sarcastaball cannot ramp its level
+without supported volume commands. Pause therefore stops the song directly
+(or transitions to idle silence below). Use physical speaker/mixer controls for
+a manual fade; this limitation cannot be fixed by sending more volume requests.
+
 The [automatic iPad idle mode](#automatic-ipad-idle-silence) changes eligible
 Pause/Stop behavior, not these volume protections.
 
@@ -211,8 +217,16 @@ unchanged; both switches retain explicit accessible labels independent of icons.
 
 ### Foreground renewal and limits
 
-The app reads the track's actual reported duration and requests a restart near
-its natural end only while visible and still eligible. It does not enable
+The app reads the track's actual reported duration and uses a renewal deadline
+with network headroom: up to one minute before its natural end, capped at a
+quarter of the reported duration for shorter tracks. Response time counts toward
+that deadline, and the next check moves forward when the deadline is nearer than
+the normal polling interval. Delayed observations from before a confirmed restart
+cannot move the new cycle's deadline back to the old one.
+
+Each restart still requires fresh eligible device/playback state, valid auth and
+a visible page. This is not an unconditional timer that overwrites another song.
+The app does not enable
 Spotify's global Repeat One or issue repeat/queue-management commands. Repeat
 must remain confirmed Off.
 
@@ -244,9 +258,10 @@ a test-suite side effect.
    its name. Confirm repeat is Off and review the queue/Autoplay risk first;
    remain able to stop unexpected audio directly.
 2. Keep the controller visible in the foreground and the screen unlocked.
-   Check the reported track duration and observe idle silence through a near-end
-   restart for longer than one complete track cycle, not merely two minutes
-   (for a ten-minute track, continue beyond ten minutes).
+   Check the reported track duration and observe at least two automatic restarts,
+   not merely two minutes (for a ten-minute track, allow more than twenty minutes).
+   Note whether the screen stays awake and the muted baseball stays in its
+   running state. A locked/hidden page is a separate case and cannot guarantee renewal.
 3. Confirm an already-playing song is not automatically replaced. Test **Pause**
    and **Resume** with a library tile: silence should run while the tile remains
    paused, then the original song should return at its retained position.
