@@ -1564,22 +1564,42 @@ function clearIdlePlayback(clearResume = false) {
 
 function updateIdleControls() {
   const enabled = idleEnabled();
-  const checkbox = document.getElementById("in-ipad-keepalive");
-  if (checkbox) checkbox.checked = enabled;
+  for (const id of ["in-ipad-keepalive", "keepalive-enabled"]) {
+    const checkbox = document.getElementById(id);
+    if (checkbox) checkbox.checked = enabled;
+  }
+  const running = enabled && !!idlePlayback && !idleFailure && !idleBlocked;
+  const state = !enabled ? "off" : running ? "running" : "on";
+  const message = !enabled
+    ? (idlePlayback ? "Keep-awake off. The last silence track may still be playing." : "Keep-awake off. Pause and Stop pause Spotify normally.")
+    : idleFailure ? "Keep-awake needs attention. See the error message for details."
+      : running ? "Keep-awake running. Silence is playing on the selected iPad."
+        : "Keep-awake on: waiting for idle Spotify on a selected iPad.";
+  const toggle = document.getElementById("keepalive-toggle");
+  if (toggle) { toggle.dataset.state = state; toggle.title = message; }
+  const emoji = document.getElementById("keepalive-emoji");
+  if (emoji) {
+    emoji.textContent = enabled ? "\u2615\uFE0F" : "\u{1F634}";
+    emoji.classList.toggle("hidden", running);
+  }
+  const ball = document.getElementById("keepalive-ball");
+  ball?.classList.toggle("hidden", !running);
+  ball?.classList.toggle("spinning", running);
+  const description = document.getElementById("keepalive-state-text");
+  if (description && description.textContent !== message) description.textContent = message;
   const status = document.getElementById("ipad-keepalive-status");
   if (!status) return;
   const focusedAction = status.contains(document.activeElement) ? document.activeElement.dataset.idleAction : null;
   const restoreFocus = () => {
     if (!focusedAction) return;
     const control = Array.from(status.querySelectorAll("button")).find(button => button.dataset.idleAction === focusedAction);
-    (control || document.getElementById(nowPlaying ? "np-pause" : "btn-settings"))?.focus({ preventScroll: true });
+    (control || document.getElementById("keepalive-enabled"))?.focus({ preventScroll: true });
   };
   status.replaceChildren();
-  status.classList.toggle("hidden", !idlePlayback && !idleFailure);
-  if (!idlePlayback && !idleFailure) { restoreFocus(); return; }
+  status.classList.toggle("hidden", !idleFailure);
+  if (!idleFailure) { restoreFocus(); return; }
   const text = document.createElement("span");
-  const idleMessage = nowPlaying?.paused ? "Song paused. Idle silence is keeping Spotify awake." : "Idle silence is keeping Spotify awake.";
-  text.textContent = idleFailure || (enabled ? idleMessage : "Keep-awake is off. Spotify may still be playing the last silence track.");
+  text.textContent = idleFailure;
   status.appendChild(text);
   if (idleFailure && enabled) {
     const retry = document.createElement("button");
@@ -1782,7 +1802,9 @@ async function setIdleEnabled(enabled) {
 }
 
 function wireIdlePlaybackControls() {
-  document.getElementById("in-ipad-keepalive").onchange = event => { void setIdleEnabled(event.target.checked); };
+  for (const id of ["in-ipad-keepalive", "keepalive-enabled"]) {
+    document.getElementById(id).onchange = event => { void setIdleEnabled(event.target.checked); };
+  }
   updateIdleControls();
 }
 
@@ -1822,6 +1844,7 @@ function queueTransport(action, operation, retry, intent = true) {
     } catch (error) {
       if (current()) {
         if (intent) idleBlocked = true;
+        updateIdleControls();
         reportTransportFailure(action, error, retry);
       }
       return false;
@@ -2073,8 +2096,14 @@ async function startPlayback(cell) {
 function setTrackPlayed(on) {
   trackPlayedOn = !!on;
   localStorage.setItem(LS_TRACK_PLAYED, trackPlayedOn ? "1" : "0");
+  updateTrackPlayedControl();
+}
+
+function updateTrackPlayedControl() {
   const cb = document.getElementById("track-played");
   if (cb) cb.checked = trackPlayedOn;
+  const icon = document.getElementById("track-played-icon");
+  if (icon) icon.textContent = trackPlayedOn ? "\u{1F435}" : "\u{1F648}";
 }
 
 // Mark one tile as played (and gray it). No-op when the switch is off or the
@@ -4873,6 +4902,7 @@ function clearErasedBrowserView(preserveCurrentSettings = false) {
     document.getElementById("track-played").checked = trackPlayedOn;
     document.getElementById("in-default-color").value = String(getDefaultColor());
   }
+  updateTrackPlayedControl();
   setDevicePill(null);
   updateVolumeControls();
   updateIdleControls();

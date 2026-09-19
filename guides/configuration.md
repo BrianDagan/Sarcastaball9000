@@ -129,6 +129,13 @@ Playback -> Keep iPad Spotify awake**. It is not a claim of public deployment or
 new hardware validation. The preference is on when absent and is saved for this
 origin under `s9000.ipadKeepAlive` (`0` means off); uncheck it to opt out.
 
+The same switch is available in the top icon bar and stays synchronized with
+Settings. Its fixed-size icon shows **coffee** when enabled and waiting,
+a **sleeping face** when off, and a **muted spinning baseball** while idle silence
+is running. Reduced motion disables the animation without changing the reported
+state. Normal activity no longer adds a banner or shifts the grid; genuine
+keep-awake errors still display their explanation and Retry action.
+
 A reported iPad trial lost control after about two minutes paused, while
 continuous playback of a silent Spotify track kept it reachable beyond two
 minutes. That supports an idle-playback workaround, not a confirmed iPadOS cause,
@@ -179,6 +186,10 @@ Disabling requests a pause only if fresh state confirms that the current track
 on the intended device is silence started by this app; it leaves unrelated
 playback alone. A failed or unconfirmed pause still needs checking in Spotify.
 Opting out does not reset sign-in, settings, library data or edits.
+
+The neighboring **Track Played** switch uses an uncovered monkey face when on
+and a covered-eyes monkey when off. Its original played-marking behavior is
+unchanged; both switches retain explicit accessible labels independent of icons.
 
 ### Foreground renewal and limits
 

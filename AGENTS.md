@@ -99,6 +99,8 @@ Use the shared volume-capability guard for every live volume/fade path. iPad/iPh
 controllers must not send volume commands; hide unusable controls without losing
 stored values or end-cue pauses. Fullscreen state must follow browser events;
 unsupported browsers get the accessible, browser-selected Home Screen help tabs.
+Keep routine keep-awake state in the fixed-size toolbar icon, not a layout-shifting
+banner. Mirror toolbar/Settings switches and preserve actionable error reporting.
 
 Automatic iPad idle silence is gated by the selected Spotify device name
 containing `iPad` (case-insensitive), never controller/UA or all Apple outputs.

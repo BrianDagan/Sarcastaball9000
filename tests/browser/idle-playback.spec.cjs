@@ -255,9 +255,11 @@ async function librarySnapshot(page) {
 }
 
 async function expectIdleStatus(page) {
-  await expect(page.locator("#ipad-keepalive-status")).toBeVisible();
-  await expect(page.locator("#ipad-keepalive-status")).toHaveAttribute("role", "status");
-  await expect(page.locator("#ipad-keepalive-status")).toContainText(/silence|silent|idle|awake/i);
+  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "running");
+  await expect(page.locator("#keepalive-ball")).toBeVisible();
+  await expect(page.locator("#keepalive-state-text")).toHaveAttribute("role", "status");
+  await expect(page.locator("#keepalive-state-text")).toContainText(/silence/i);
+  await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
 }
 
 test("a saved iPad selection starts known silence automatically with the default enabled", async ({ page }) => {

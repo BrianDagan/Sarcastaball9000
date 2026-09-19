@@ -59,12 +59,21 @@
       <button id="tab-scroll-right" class="tab-scroll hidden" title="Scroll tabs right" aria-label="Scroll tabs right">›</button>
     </div>
     <div class="topbar-right">
-      <!-- "Track Played" toggle. The eye emoji is the compact label; the tooltip
+      <!-- "Track Played" toggle. The monkey emoji is the compact label; the tooltip
            explains what it does so we don't need to spend width on text. -->
       <label id="track-played-toggle" class="switch-label" title="Track Played: when ON, playing a song marks it as played and grays it out. Turn OFF to replay/tinker without re-flagging.">
-        <span class="switch-emoji" aria-hidden="true">👁️</span>
+        <span id="track-played-icon" class="switch-icon switch-emoji emoji-icon" aria-hidden="true">🐵</span>
         <input type="checkbox" id="track-played" aria-label="Track played songs" />
         <span class="switch"></span>
+      </label>
+      <label id="keepalive-toggle" class="switch-label" data-state="on" title="Keep-awake on: waiting for idle Spotify on a selected iPad.">
+        <span class="switch-icon" aria-hidden="true">
+          <span id="keepalive-emoji" class="switch-emoji emoji-icon">☕️</span>
+          <img id="keepalive-ball" class="hidden" src="assets/baseball.svg" width="24" height="24" alt="" draggable="false" />
+        </span>
+        <input id="keepalive-enabled" type="checkbox" aria-label="Keep iPad Spotify awake" aria-describedby="keepalive-state-text" />
+        <span class="switch"></span>
+        <span id="keepalive-state-text" class="visually-hidden" role="status">Keep-awake on: waiting for idle Spotify on a selected iPad.</span>
       </label>
       <button id="btn-clear-played" class="icon-btn" title="Clear the played marks on this tab">🧹</button>
       <button id="btn-search" class="icon-btn" title="Find a song across all tabs">🔍</button>

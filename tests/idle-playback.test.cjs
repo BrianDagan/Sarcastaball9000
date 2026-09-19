@@ -182,14 +182,17 @@ test("an end-cue stop keeps the song stopped while switching to idle silence", a
   assert.equal(app.backend.state.item.id, SILENCE);
 });
 
-test("status refresh keeps keyboard focus on its existing action", async t => {
+test("status refresh keeps focus on the stable toolbar switch", async t => {
   const app = controller(t);
   await app.run("checkIdlePlayback()");
-  app.window.document.querySelector("#ipad-keepalive-status button").focus();
+  app.window.document.getElementById("keepalive-enabled").focus();
   await app.run("checkIdlePlayback()");
-  assert.equal(app.window.document.activeElement.dataset.idleAction, "disable");
+  assert.equal(app.window.document.activeElement.id, "keepalive-enabled");
+  assert.equal(app.window.document.getElementById("keepalive-toggle").dataset.state, "running");
+  assert.equal(app.window.document.getElementById("ipad-keepalive-status").classList.contains("hidden"), true);
   await app.run("setIdleEnabled(false)");
-  assert.equal(app.window.document.activeElement.id, "btn-settings");
+  assert.equal(app.window.document.activeElement.id, "keepalive-enabled");
+  assert.equal(app.window.document.getElementById("keepalive-toggle").dataset.state, "off");
 });
 
 test("disabling never pauses another track that replaced idle silence", async t => {
