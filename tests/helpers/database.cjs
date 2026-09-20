@@ -58,8 +58,32 @@ function fixture(SQL, title = "Synthetic track") {
   return bytes;
 }
 
-async function databaseApp(t, { load = true, indexedDB } = {}) {
-  const app = createApp();
+function lineupFixture(SQL, count = 5) {
+  const db = new SQL.Database(fixture(SQL));
+  try {
+    const playback = db.exec(`SELECT * FROM Playback WHERE playbackUUIDRaw='${ids.firstPlayback}'`)[0];
+    const sound = db.exec("SELECT * FROM Sound WHERE trackID='synthetic-track-0'")[0];
+    const originalPlayback = Object.fromEntries(playback.columns.map((key, i) => [key, playback.values[0][i]]));
+    const originalSound = Object.fromEntries(sound.columns.map((key, i) => [key, sound.values[0][i]]));
+    db.run("UPDATE Playback SET displayTitle=? WHERE playbackUUIDRaw=?", ["Synthetic player 1", ids.firstPlayback]);
+    for (let index = 1; index < count; index++) {
+      const source = { ...originalSound,
+        soundUUIDRaw: `00000000-0000-4000-8000-${String(2000 + index).padStart(12, "0")}`,
+        title: `Synthetic song ${index + 1}`, trackID: `synthetic-lineup-track-${index}`,
+      };
+      const row = { ...originalPlayback,
+        playbackUUIDRaw: `00000000-0000-4000-8000-${String(1000 + index).padStart(12, "0")}`,
+        sourceUUIDRaw: source.soundUUIDRaw, orderIndex: index, displayTitle: `Synthetic player ${index + 1}`,
+      };
+      db.run(`INSERT INTO Sound VALUES (${sound.columns.map(() => "?").join(",")})`, sound.columns.map(key => source[key]));
+      db.run(`INSERT INTO Playback VALUES (${playback.columns.map(() => "?").join(",")})`, playback.columns.map(key => row[key]));
+    }
+    return db.export();
+  } finally { db.close(); }
+}
+
+async function databaseApp(t, { load = true, indexedDB, origin } = {}) {
+  const app = createApp({ origin });
   t.after(async () => {
     await app.run("databaseQueue");
     app.run("clearDatabaseState()");
@@ -86,4 +110,4 @@ function scalar(SQL, bytes, sql) {
   finally { db.close(); }
 }
 
-module.exports = { ids, getSql, fixture, databaseApp, scalar };
+module.exports = { ids, getSql, fixture, lineupFixture, databaseApp, scalar };

@@ -91,8 +91,11 @@
 
   <div id="transport-status" class="hidden" role="alert"></div>
   <div id="ipad-keepalive-status" class="hidden" role="status"></div>
+  <div id="lineup-status" class="hidden" role="alert"></div>
 
   <main id="grid-container">
+    <p id="lineup-reorder-help" class="sr-only">Drag this handle to reorder. When it has keyboard focus, use Up or Down, or activate it for Move Up and Move Down buttons. Escape cancels a drag.</p>
+    <div id="lineup-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
     <div id="grid"></div>
     <div id="empty-state" class="hidden">
       <p>No database loaded.</p>

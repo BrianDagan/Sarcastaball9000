@@ -104,6 +104,22 @@ banner. Mirror toolbar/Settings switches and preserve actionable error reporting
 Tile touch-and-hold must open editing without a release click playing a song or
 activating a menu item. Preserve scrolling, pinch zoom and ordinary multi-tap actions.
 
+Standard/Lineup is a per-tab choice from its context menu, never inferred from
+a tab name. Lineup has one row per playback UUID with handle-only dragging.
+Persist order through native Playback.orderIndex and the existing transactional
+backup/recovery/save path; do not add native schema fields for layout/attendance.
+Those browser preferences are scoped to the recovery library identity, survive
+reload/Save, and start fresh only after a successful new import. Merge concurrent
+preference writes under the Lineup and erase gates; queued stale writers must
+not recreate storage after logout or replacement. Absent rows stay numbered/in
+place and keep their full song menu. Block Start/Resume from every activation
+path only while the owning tab uses Lineup, without stopping current audio,
+end cues or idle silence. Standard retains but ignores absence flags. Mark
+everyone present affects only attendance on that tab, not order or played marks.
+Keep keyboard alternatives and focus stable; cancel gestures without a reorder,
+dirty edit or release-click action. The feature contract is in
+`guides/configuration.md`.
+
 Automatic iPad idle silence is gated by the selected Spotify device name
 containing `iPad` (case-insensitive), never controller/UA or all Apple outputs.
 Keep `in-ipad-keepalive` default-on when `s9000.ipadKeepAlive` is absent, with

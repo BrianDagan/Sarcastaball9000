@@ -120,6 +120,20 @@ for (const taps of [1, 2, 3]) {
   });
 }
 
+test("a rerender during a short touch cannot click the newly exposed control on release", t => {
+  const { app, cell, pointer, advance } = touchScene(t);
+  pointer("pointerdown");
+  advance(100);
+  const replacement = app.window.document.createElement("button");
+  replacement.onclick = () => { app.window.menuActions++; };
+  cell.replaceWith(replacement);
+  pointer("pointerup", app.window.document);
+  assert.equal(pointer("click", replacement).defaultPrevented, true);
+  advance(500);
+  assert.equal(app.window.activations, 0);
+  assert.equal(app.window.menuActions, 0);
+});
+
 test("holding after a quick tap cancels the pending tap rather than starting a song under the menu", t => {
   const { app, tap, pointer, advance } = touchScene(t);
   tap();

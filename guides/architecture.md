@@ -146,6 +146,51 @@ Legacy pending edits migrate only with their existing cached database. Stale
 tabs must not overwrite newer recovery; missing historical baselines cannot be
 reconstructed. Export before downgrading; old code cannot read the newer record.
 
+## Lineup view and attendance
+
+Standard remains the default layout. Per-tab Lineup uses the same track-button
+renderer and playback UUIDs, with sibling drag/attendance controls rather than
+interactive elements nested inside a song button. Track menus, pending overlays,
+played flags and playback snapshots remain shared with Standard.
+
+Layout and attendance live in a separate format-1 localStorage record under
+`s9000.lineup.<encoded database identity>`. Its `layouts` map is keyed by group
+UUID and its `absent` map by playback UUID. Neither tab titles/positions nor
+Spotify track IDs identify a preference. Save/recovery keep the library
+identity; a successful imported replacement gets a new identity and therefore
+fresh Standard/present defaults. Browser-only changes do not dirty the SQLite
+database or get embedded in exports.
+
+Preference updates read/merge/write a validated record under the Lineup Web
+Lock and the existing auth/erase gate. Before writing, they check the current
+recovery identity with an existing-only IndexedDB read. A stale queued writer
+must not recreate settings or even an empty recovery database after a missed
+logout/import notification. Same-library storage events refresh local views
+without writing back. Invalid records and storage failures retain existing
+data and report failure rather than silently discarding attendance.
+
+Track ordering is separate: `writePlaybackOrder()` checks exact group membership
+and the current working revision, then uses the existing transaction/backup/
+recovery path for native `Playback.orderIndex` and update timestamps. Tab sorting
+shares this helper; the resulting order is checked before commit so a native
+trigger cannot silently ignore the reorder. Canceled/unchanged drops do not mutate data; pending edits,
+unfamiliar native columns and newer edits during Save remain intact.
+
+Pointer capture and custom scrolling apply only to the handle. Dragging previews
+an insertion marker and commits once at a valid drop. Cancellation and the
+shared document-level release-click guard prevent playback or menu activation
+from an ending gesture. Keyboard and non-drag move actions use the same order
+helper, preserving focus by UUID rather than row index.
+
+An absent playback UUID is restricted only while its actual owning group uses
+Lineup, regardless of which tab is rendered. The command guard is independent
+of DOM/ARIA styling and covers detached retries and asynchronous device/token
+completion. Reject already-blocked commands before they alter transport intent
+or cancel fades/idle renewal. Attendance changes do not interrupt current audio;
+Pause, Stop, end-cue pauses and idle silence are unaffected. Standard retains
+but ignores absence flags. Existing commands already sent to Spotify cannot
+be recalled, and externally initiated playback is outside this UI restriction.
+
 ## Asynchronous playback and limits
 
 Epochs, revisions and intent counters guard replacement and teardown. Playing

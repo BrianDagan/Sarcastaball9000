@@ -146,6 +146,79 @@ delivers those keys. Press Escape or tap outside to dismiss it.
 The visible app/browser-tab title is **Sarcastaball**. Repository references,
 browser-storage identifiers and database/export filenames remain unchanged.
 
+## Standard and Lineup layouts
+
+Right-click or touch-and-hold a **tab name**, then choose **Lineup** under
+**Layout**. Choose **Standard** to return to the original grid. Every tab can
+be configured independently; no tab name automatically enables Lineup.
+With a keyboard, focus a tab and use the Context Menu key or Shift+F10.
+
+Lineup shows one full-width row per existing track button. Each row has a
+three-line reorder handle, its position number, the existing song button and
+a **Present** checkbox. Song titles, cues, colors, hotkeys and played marks
+retain their existing meanings. Holding/right-clicking the song still opens
+its complete action menu, including Copy song.
+
+Drag the handle to place a row before or after another row on the same tab.
+Near the list's top/bottom edge, the list scrolls to reach additional players.
+Dragging the song body is not a reorder gesture; normal scrolling and pinch
+zoom remain available there. Escape, a canceled/multi-touch gesture or leaving
+the view cancels a drag without applying its preview. A drop does not play a song.
+
+Alternatively, click/tap the handle for **Move Up / Move Down**, or focus the
+handle and use the Up/Down keys. After a move, focus stays with that player.
+Use the existing song menu's **Move to** action to move between tabs.
+
+### Attendance during a game
+
+Uncheck **Present** to mark a player **Absent**. Their row remains in place,
+keeps its position number and becomes dimmed; it is not deleted or skipped in
+the numbering. Its reorder handle, attendance control and song action menu
+remain available. The played mark is independent: a previously played song
+can still be played again, whereas an absent player cannot be started/resumed
+while their tab uses Lineup.
+
+Attendance restrictions also apply to keyboard/hotkey activation, toolbar
+Resume and Retry, even when another tab is visible. Marking a player absent
+does **not** stop music already playing or remove its end cue. Pause and Stop
+remain available, and eligible iPad idle silence continues normally while
+paused. Mark the player present before resuming, or change their own tab to
+Standard. Neither change automatically resumes anything.
+Saved cue edits are still possible, but a blocked preview does not resume or
+seek the idle audio; mark the player present to hear the preview.
+
+Standard ignores, but remembers, that tab's absence flags. Switching back to
+Lineup restores them. For the next game, the Lineup tab menu's
+**Mark everyone present** command clears only that tab's absence flags after
+confirmation. It does not change order, played marks or other tabs. There is
+no automatic date-based reset.
+
+### What is saved where
+
+Reordering updates the existing SQLite `Playback.orderIndex` field through
+the normal backup, dirty-state and browser-recovery path. The order also
+appears in Standard. Use **Save** to export it in the database; dragging does
+not overwrite the original file on disk.
+
+Layout and attendance are browser-only preferences, separate from database
+edits. They survive same-browser reloads, browser restarts, tab renames/reorders
+and Save/export, provided browser storage is retained. They do not travel with
+the exported SQLite file or transfer to another browser/origin. No native
+database columns or tables are added.
+
+Every successful new database import starts with Standard layouts and everyone
+present, even when importing a previously exported copy with the same IDs.
+Recovering the existing browser library is different from importing a file:
+recovery retains its preferences. Failed/canceled imports leave them intact.
+New/copied buttons start present; existing buttons retain their attendance
+when moved, with restrictions determined by their destination tab's layout.
+
+Preference read/write errors are reported without erasing existing data.
+Resolve browser-storage access problems and use **Retry loading settings**,
+then repeat a change that was not saved. Missing Web Locks does not permit
+unprotected preference writes. Unreadable attendance cannot silently authorize
+a new Start/Resume; Pause, Stop and database export remain available.
+
 ## Automatic iPad idle silence
 
 This section describes the local feature contract for builds with **Settings ->

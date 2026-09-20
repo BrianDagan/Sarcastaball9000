@@ -76,6 +76,8 @@ const LS_FADE_OUT = "s9000.fadeOutSec"; // default fade-out duration in seconds 
 const LS_PENDING = "s9000.pending";  // unsaved edits: {colors: {pbUUID: color}, deletes: [pbUUID]}
 const LS_TRACK_PLAYED = "s9000.trackPlayed";  // "1"/"0": whether playing a song marks it as played
 const LS_IPAD_KEEPALIVE = "s9000.ipadKeepAlive";
+const LS_LINEUP_PREFIX = "s9000.lineup.";
+const LINEUP_LOCK_NAME = "s9000.lineup-preferences";
 
 // IndexedDB is a larger browser storage area. We use it to stash a copy of the
 // loaded SQLite database so you don't have to re-pick the file on every visit.
@@ -193,6 +195,7 @@ async function invalidateDatabaseWork() {
 }
 
 function clearDatabaseState() {
+  resetLineupState();
   if (db) db.close();
   db = null;
   groups = [];
@@ -253,13 +256,13 @@ const TAP_ACTIONS = {
 // =====================================================================
 // IndexedDB helpers (cache the DB binary so we don't re-pick every load)
 // =====================================================================
-function idbOpen() {
+function idbOpen({ existingOnly = false } = {}) {
   const epoch = databaseEpoch;
   return new Promise((res, rej) => {
     if (browserCleanupActive()) { rej(new Error("Browser cleanup is in progress.")); return; }
     const req = indexedDB.open(IDB_NAME, 1);
     req.onupgradeneeded = () => {
-      if (epoch !== databaseEpoch || browserCleanupActive()) { req.transaction.abort(); return; }
+      if (existingOnly || epoch !== databaseEpoch || browserCleanupActive()) { req.transaction.abort(); return; }
       req.result.createObjectStore(IDB_STORE);
     };
     req.onsuccess = () => {
@@ -301,8 +304,8 @@ async function idbPut(key, val, expectedVersion) {
     };
   });
 }
-async function idbGet(key) {
-  const conn = await idbOpen();
+async function idbGet(key, options) {
+  const conn = await idbOpen(options);
   return new Promise((res, rej) => {
     const tx = conn.transaction(IDB_STORE, "readonly");
     const r = tx.objectStore(IDB_STORE).get(key);
@@ -410,6 +413,7 @@ function persistRecoveryRecord(record, epoch = databaseEpoch) {
 }
 
 function installDatabase(candidate, identity, edits, baseline, active = false) {
+  resetLineupState();
   invalidateTransportWork();
   invalidateSearchWork();
   hideCellContextMenu();
@@ -441,6 +445,7 @@ async function loadDbFromBytes(bytes, requestSequence = ++importSequence) {
   const epoch = databaseEpoch;
   if (erasingBrowser || saveInProgress) throw new Error("Wait for the current save or cleanup before importing.");
   databaseImporting = true;
+  cancelLineupDrag();
   let candidate;
   try {
     candidate = await openDatabaseCandidate(bytes);
@@ -565,27 +570,241 @@ function queryAll(sql, params = []) {
 }
 
 // =====================================================================
+// Browser-only Lineup preferences; the SQLite schema remains unchanged.
+// =====================================================================
+let lineupCache = null;
+let lineupCacheIdentity = null;
+let lineupCacheRaw;
+let lineupFailure = null;
+let lineupDrag = null;
+
+function emptyLineupPreferences() {
+  return { format: 1, layouts: Object.create(null), absent: Object.create(null) };
+}
+
+function lineupStorageKey(identity = databaseIdentity) {
+  return LS_LINEUP_PREFIX + encodeURIComponent(identity);
+}
+
+function normalizeLineupPreferences(value) {
+  const isMap = item => item && typeof item === "object" && !Array.isArray(item);
+  if (!isMap(value) || value.format !== 1 ||
+      Object.keys(value).some(key => !["format", "layouts", "absent"].includes(key))) {
+    throw new Error("Saved Lineup settings have an unsupported format. The original settings were preserved.");
+  }
+  const result = emptyLineupPreferences();
+  for (const field of ["layouts", "absent"]) {
+    if (!isMap(value[field])) throw new Error("Saved Lineup settings are invalid. The original settings were preserved.");
+    for (const [id, setting] of Object.entries(value[field])) {
+      if (!id || (field === "layouts" ? !["standard", "lineup"].includes(setting) : typeof setting !== "boolean")) {
+        throw new Error("Saved Lineup settings are invalid. The original settings were preserved.");
+      }
+      result[field][id] = setting;
+    }
+  }
+  return result;
+}
+
+function readLineupPreferences() {
+  if (!db || !databaseIdentity) return emptyLineupPreferences();
+  const raw = localStorage.getItem(lineupStorageKey());
+  if (lineupCache && lineupCacheIdentity === databaseIdentity && lineupCacheRaw === raw) return lineupCache;
+  let value = emptyLineupPreferences();
+  if (raw !== null) {
+    try { value = JSON.parse(raw); }
+    catch { throw new Error("Saved Lineup settings are unreadable. The original settings were preserved."); }
+  }
+  const normalized = normalizeLineupPreferences(value);
+  lineupCache = normalized;
+  lineupCacheIdentity = databaseIdentity;
+  lineupCacheRaw = raw;
+  return normalized;
+}
+
+function showLineupFailure(message) {
+  if (lineupFailure === message) return;
+  lineupFailure = message;
+  const status = document.getElementById("lineup-status");
+  const text = document.createElement("span");
+  text.textContent = message;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.textContent = "Retry loading settings";
+  retry.onclick = () => {
+    clearLineupFailure();
+    refreshLineupView();
+    const target = status.querySelector("button") || document.querySelector("#tabs .tab.active") ||
+      document.getElementById("btn-settings");
+    target?.focus({ preventScroll: true });
+  };
+  status.replaceChildren(text, retry);
+  status.classList.remove("hidden");
+}
+
+function clearLineupFailure() {
+  lineupFailure = null;
+  const status = document.getElementById("lineup-status");
+  status.replaceChildren();
+  status.classList.add("hidden");
+}
+
+function resetLineupState() {
+  cancelLineupDrag();
+  lineupCache = lineupCacheIdentity = null;
+  lineupCacheRaw = undefined;
+  clearLineupFailure();
+}
+
+function getLineupPreferences() {
+  try { return readLineupPreferences(); }
+  catch (error) {
+    showLineupFailure(`Lineup settings could not be loaded. ${error.message} No app data was erased.`);
+    return null;
+  }
+}
+
+function tabLayout(groupUUID, preferences = getLineupPreferences()) {
+  return groupUUID != null && preferences?.layouts[groupUUID] === "lineup" ? "lineup" : "standard";
+}
+
+function refreshLineupView() {
+  if (!db) return;
+  cancelLineupDrag();
+  renderTabs();
+  renderGrid();
+  updatePauseBtn();
+}
+
+async function changeLineupPreferences(change) {
+  const identity = databaseIdentity;
+  const epoch = databaseEpoch;
+  const current = () => db && databaseIdentity === identity && epoch === databaseEpoch &&
+    !databaseImporting && !browserCleanupActive();
+  if (!current()) {
+    showToast("Wait until the library has loaded and any import or cleanup has finished.");
+    return false;
+  }
+  try {
+    if (!navigator.locks?.request) throw new Error("This browser needs Web Locks to save Lineup settings safely.");
+    const saved = await navigator.locks.request(LINEUP_LOCK_NAME, () =>
+      navigator.locks.request(AUTH_LOCK_NAME, async () => {
+        if (!current()) return false;
+        // Share the erase gate, and reject writers left behind by a completed
+        // logout/import even if their document missed its storage notification.
+        const recovery = await idbGet(IDB_KEY, { existingOnly: true });
+        if (!current()) return false;
+        if (recovery?.identity !== identity) throw new Error("The saved library changed. Reload before changing Lineup settings.");
+        const next = normalizeLineupPreferences(readLineupPreferences());
+        change(next);
+        const validated = normalizeLineupPreferences(next);
+        const raw = JSON.stringify(validated);
+        localStorage.setItem(lineupStorageKey(identity), raw);
+        lineupCache = validated;
+        lineupCacheIdentity = identity;
+        lineupCacheRaw = raw;
+        return true;
+      }));
+    if (saved && current()) {
+      clearLineupFailure();
+      refreshLineupView();
+    }
+    return saved;
+  } catch (error) {
+    if (current()) {
+      showLineupFailure(`Lineup change was not saved. ${error.message} Try the change again after resolving the problem.`);
+      refreshLineupView();
+    }
+    return false;
+  }
+}
+
+function setTabLayout(groupUUID, layout) {
+  return changeLineupPreferences(preferences => {
+    if (!["standard", "lineup"].includes(layout)) throw new Error("Choose Standard or Lineup.");
+    if (!groups.some(group => group.uuid === groupUUID)) throw new Error("That tab is no longer available.");
+    if (layout === "standard") delete preferences.layouts[groupUUID];
+    else preferences.layouts[groupUUID] = layout;
+  });
+}
+
+function setPlayerPresent(pbUUID, present) {
+  return changeLineupPreferences(preferences => {
+    if (typeof present !== "boolean" || !cellGroupUUID(pbUUID)) throw new Error("That player is no longer available.");
+    if (present) delete preferences.absent[pbUUID];
+    else preferences.absent[pbUUID] = true;
+  });
+}
+
+function markEveryonePresent(groupUUID) {
+  return changeLineupPreferences(preferences => {
+    if (!groups.some(group => group.uuid === groupUUID)) throw new Error("That tab is no longer available.");
+    for (const row of queryAll("SELECT playbackUUIDRaw AS uuid FROM Playback WHERE playbackGroupUUIDRaw=?", [groupUUID])) {
+      delete preferences.absent[row.uuid];
+    }
+  });
+}
+
+class LineupPlaybackUnavailableError extends Error {}
+
+function lineupPlaybackReason(pbUUID) {
+  if (!db || !pbUUID) return "";
+  const preferences = getLineupPreferences();
+  if (!preferences) return "Lineup settings are unavailable. Retry loading settings before starting or resuming a player.";
+  return tabLayout(cellGroupUUID(pbUUID), preferences) === "lineup" && preferences.absent[pbUUID] === true
+    ? "This player is absent. Mark them present, or switch their tab to Standard, before starting or resuming."
+    : "";
+}
+
+function allowLineupPlayback(pbUUID) {
+  const reason = lineupPlaybackReason(pbUUID);
+  if (reason) showToast(reason);
+  return !reason;
+}
+
+function assertLineupPlayback(pbUUID) {
+  const reason = lineupPlaybackReason(pbUUID);
+  if (reason) throw new LineupPlaybackUnavailableError(reason);
+}
+
+// =====================================================================
 // Render
 // =====================================================================
 function renderTabs() {
+  cancelLineupDrag();
   const tabs = document.getElementById("tabs");
+  const focusedUUID = document.activeElement?.closest("#tabs .tab")?.dataset.groupuuid;
+  const preferences = getLineupPreferences();
   tabs.innerHTML = "";
   groups.forEach((g, i) => {
     const b = document.createElement("button");
     b.className = "tab" + (i === activeTabIdx ? " active" : "");
     b.textContent = g.name;
     b.dataset.tabIdx = String(i);
+    b.dataset.groupuuid = g.uuid;
+    b.dataset.layout = tabLayout(g.uuid, preferences);
     b.onclick = () => {
       activeTabIdx = i;
       localStorage.setItem(LS_TAB, String(i));
       renderTabs();
       renderGrid();
     };
+    const openMenu = (x, y) => {
+      showTabContextMenu(i, x, y);
+      document.querySelector("#ctx-menu .ctx-item:not(:disabled)")?.focus({ preventScroll: true });
+    };
+    const hold = bindLongPress(b, openMenu, { suppressClick: true });
     b.addEventListener("contextmenu", (e) => {
       e.preventDefault();
-      showTabContextMenu(i, e.clientX, e.clientY);
+      if (!hold.handleContextMenu()) openMenu(e.clientX, e.clientY);
     });
-    bindLongPress(b, (x, y) => showTabContextMenu(i, x, y));
+    b.addEventListener("keydown", e => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+        e.preventDefault();
+        const rect = b.getBoundingClientRect();
+        openMenu(rect.left, rect.bottom);
+      }
+    });
     tabs.appendChild(b);
   });
   // + button to add a new tab
@@ -596,6 +815,7 @@ function renderTabs() {
   add.textContent = "+";
   add.onclick = tabAdd;
   tabs.appendChild(add);
+  if (focusedUUID) Array.from(tabs.querySelectorAll(".tab")).find(tab => tab.dataset.groupuuid === focusedUUID)?.focus({ preventScroll: true });
   // The set of tabs just changed, so recompute which scroll arrows/fades to show.
   // requestAnimationFrame waits until the browser has laid the new buttons out,
   // otherwise scrollWidth/clientWidth would still report the old sizes.
@@ -686,6 +906,39 @@ function setupTabDragScroll(tabs) {
 // =====================================================================
 // Long-press detection (for touch/iOS) — fires after 500ms of stationary press
 // =====================================================================
+function guardPointerReleaseClick(id, onClear) {
+  // A menu or reordered row can expose a different control beneath the release.
+  let expiry = null;
+  const clear = () => {
+    clearTimeout(expiry);
+    document.removeEventListener("click", swallow, true);
+    document.removeEventListener("pointerdown", nextPress, true);
+    document.removeEventListener("pointerup", released, true);
+    document.removeEventListener("pointercancel", released, true);
+    window.removeEventListener("pagehide", clear);
+    onClear?.();
+  };
+  const swallow = event => {
+    if (event.detail === 0 && !event.pointerType) return;
+    if (event.pointerId > 0 && event.pointerId !== id) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    clear();
+  };
+  const nextPress = event => { if (event.isPrimary !== false) clear(); };
+  const released = event => {
+    if (event.pointerId !== id) return;
+    clearTimeout(expiry);
+    expiry = setTimeout(clear, 1000);
+  };
+  document.addEventListener("click", swallow, true);
+  document.addEventListener("pointerdown", nextPress, true);
+  document.addEventListener("pointerup", released, true);
+  document.addEventListener("pointercancel", released, true);
+  window.addEventListener("pagehide", clear);
+  return clear;
+}
+
 function bindLongPress(el, handler, { onStart, onCancel, suppressClick = false } = {}) {
   let timer = null;
   let pointerId = null;
@@ -694,40 +947,14 @@ function bindLongPress(el, handler, { onStart, onCancel, suppressClick = false }
   let startX = 0, startY = 0;
   const guardReleaseClick = id => {
     releaseGuard?.();
-    let expiry = null;
-    const clear = () => {
-      clearTimeout(expiry);
-      document.removeEventListener("click", swallow, true);
-      document.removeEventListener("pointerdown", nextPress, true);
-      document.removeEventListener("pointerup", released, true);
-      document.removeEventListener("pointercancel", released, true);
-      window.removeEventListener("pagehide", clear);
+    const clear = guardPointerReleaseClick(id, () => {
       if (releaseGuard === clear) releaseGuard = null;
-    };
-    const swallow = event => {
-      if (event.detail === 0 && !event.pointerType) return;
-      if (event.pointerId > 0 && event.pointerId !== id) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      clear();
-    };
-    const nextPress = event => { if (event.isPrimary !== false) clear(); };
-    const released = event => {
-      if (event.pointerId !== id) return;
-      clearTimeout(expiry);
-      expiry = setTimeout(clear, 1000);
-    };
+    });
     releaseGuard = clear;
-    // The menu can appear beneath the finger, so guard the document rather
-    // than only the tile. A fresh pointerdown still permits the next real tap.
-    document.addEventListener("click", swallow, true);
-    document.addEventListener("pointerdown", nextPress, true);
-    document.addEventListener("pointerup", released, true);
-    document.addEventListener("pointercancel", released, true);
-    window.addEventListener("pagehide", clear);
   };
   const finish = canceled => {
     if (pointerId === null) return;
+    canceled ||= !el.isConnected || document.visibilityState === "hidden";
     const id = pointerId;
     clearTimeout(timer);
     timer = null;
@@ -793,11 +1020,132 @@ function bindLongPress(el, handler, { onStart, onCancel, suppressClick = false }
   };
 }
 
+function createPlaybackCell(r) {
+  const cell = document.createElement("button");
+  cell.type = "button";
+  cell.className = "cell";
+  cell.dataset.color = String(r.color);
+  cell.dataset.pbuuid = r.pbUUID;
+  cell.dataset.trackid = r.trackID || "";
+  cell.dataset.startms = String(Math.round((r.startSec || 0) * 1000 + (r.startSubSec || 0) * 1000));
+  cell.dataset.stopms  = String(Math.round((r.stopSec || 0) * 1000 + (r.stopSubSec || 0) * 1000));
+  cell.dataset.fadein  = String(r.fadeIn ?? -1);
+  cell.dataset.fadeout = String(r.fadeOut ?? -1);
+  cell.dataset.volume  = String(r.pbVolume ?? -1);
+  cell.dataset.duration = String(Math.round((r.duration || 0) * 1000));
+  cell.dataset.hotkey  = (r.hotKey || "").toString().toUpperCase();
+
+  const titleDiv = document.createElement("div");
+  titleDiv.className = "title";
+  titleDiv.textContent = r.title || r.sTitle || "(untitled)";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = (r.sTitle && r.sArtist) ? `${r.sTitle} — ${r.sArtist}` : (r.sArtist || "");
+  const start = document.createElement("div");
+  start.className = "start";
+  start.textContent = fmtTime(r.startSec || 0);
+  const hk = document.createElement("div");
+  hk.className = "hotkey-badge";
+  const dot = document.createElement("div");
+  dot.className = "edited-dot";
+  cell.append(start, titleDiv, meta, hk, dot);
+  applyPendingToCell(cell);
+  if (r.played) cell.classList.add("played");
+  bindTaps(cell);
+  return cell;
+}
+
+function createLineupRow(cell, groupUUID, index, preferences, readable) {
+  const uuid = cell.dataset.pbuuid;
+  const identity = databaseIdentity;
+  const name = cell.querySelector(".title").textContent;
+  const row = document.createElement("div");
+  row.className = "lineup-row";
+  row.dataset.pbuuid = uuid;
+  row.setAttribute("role", "listitem");
+  row.classList.toggle("is-absent", preferences.absent[uuid] === true);
+
+  const handle = document.createElement("button");
+  handle.type = "button";
+  handle.className = "lineup-handle";
+  handle.setAttribute("aria-label", `Reorder ${name}`);
+  handle.setAttribute("aria-describedby", "lineup-reorder-help");
+  handle.title = "Drag to reorder, or activate for Move Up / Move Down";
+  handle.disabled = !readable;
+  const grip = document.createElement("span");
+  grip.className = "lineup-grip";
+  grip.setAttribute("aria-hidden", "true");
+  handle.appendChild(grip);
+  handle.onclick = event => {
+    event.stopPropagation();
+    if (identity === databaseIdentity) showLineupMoveMenu(uuid, groupUUID, handle);
+  };
+  handle.onkeydown = event => {
+    if (!["ArrowUp", "ArrowDown"].includes(event.key) || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (identity === databaseIdentity) moveLineupPlayer(uuid, groupUUID, event.key === "ArrowUp" ? -1 : 1);
+  };
+  bindLineupDrag(handle, row, groupUUID);
+  const position = document.createElement("span");
+  position.className = "lineup-position";
+  position.id = `lineup-position-${index}`;
+  position.textContent = String(index + 1);
+  position.setAttribute("aria-label", `Position ${index + 1}`);
+  cell.setAttribute("aria-describedby", position.id);
+
+  const label = document.createElement("label");
+  label.className = "lineup-attendance";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.className = "lineup-present";
+  checkbox.checked = preferences.absent[uuid] !== true;
+  checkbox.disabled = !readable;
+  checkbox.setAttribute("aria-label", `${name}: present for this game`);
+  let changing = false;
+  checkbox.onchange = async () => {
+    const present = checkbox.checked;
+    checkbox.checked = !present;
+    if (changing) return;
+    changing = true;
+    checkbox.setAttribute("aria-busy", "true");
+    if (identity === databaseIdentity) await setPlayerPresent(uuid, present);
+    changing = false;
+    if (checkbox.isConnected) checkbox.removeAttribute("aria-busy");
+  };
+  const state = document.createElement("span");
+  state.textContent = checkbox.checked ? "Present" : "Absent";
+  label.append(checkbox, state);
+  row.append(handle, position, cell, label);
+  return row;
+}
+
 function renderGrid() {
+  cancelLineupDrag();
   const grid = document.getElementById("grid");
-  grid.innerHTML = "";
+  const scroller = document.getElementById("grid-container");
   const g = groups[activeTabIdx];
-  if (!g) return;
+  const sameGroup = !!g && grid.dataset.groupuuid === g.uuid;
+  const active = document.activeElement;
+  const activeUUID = active?.closest(".lineup-row, .cell")?.dataset.pbuuid;
+  const focusUUID = sameGroup ? activeUUID || focusedCell?.dataset.pbuuid : null;
+  const focusPart = grid.contains(active) ? active?.matches(".lineup-handle") ? ".lineup-handle" :
+    active?.matches(".lineup-present") ? ".lineup-present" : ".cell" : null;
+  const scrollTop = scroller.scrollTop;
+  grid.replaceChildren();
+  grid.dataset.groupuuid = g?.uuid || "";
+  const loaded = getLineupPreferences();
+  const preferences = loaded || (lineupCacheIdentity === databaseIdentity && lineupCache) || emptyLineupPreferences();
+  const lineup = !!g && tabLayout(g.uuid, preferences) === "lineup";
+  grid.dataset.layout = lineup ? "lineup" : "standard";
+  if (lineup) {
+    grid.setAttribute("role", "list");
+    grid.setAttribute("aria-label", `${g.name} lineup`);
+  } else {
+    grid.removeAttribute("role");
+    grid.removeAttribute("aria-label");
+  }
+  if (!g) { setFocusedCell(null, false); return; }
   const rows = queryAll(`
     SELECT
       p.playbackUUIDRaw    AS pbUUID,
@@ -823,56 +1171,250 @@ function renderGrid() {
     ORDER BY p.orderIndex
   `, [g.uuid]);
 
-  rows.forEach(r => {
-    const cell = document.createElement("button");
-    cell.className = "cell";
-    cell.dataset.color = String(r.color);
-    cell.dataset.pbuuid = r.pbUUID;
-    cell.dataset.trackid = r.trackID || "";
-    cell.dataset.startms = String(Math.round((r.startSec || 0) * 1000 + (r.startSubSec || 0) * 1000));
-    cell.dataset.stopms  = String(Math.round((r.stopSec || 0) * 1000 + (r.stopSubSec || 0) * 1000));
-    cell.dataset.fadein  = String(r.fadeIn ?? -1);
-    cell.dataset.fadeout = String(r.fadeOut ?? -1);
-    cell.dataset.volume  = String(r.pbVolume ?? -1);
-    cell.dataset.duration = String(Math.round((r.duration || 0) * 1000));
-    cell.dataset.hotkey  = (r.hotKey || "").toString().toUpperCase();
-
-    const titleDiv = document.createElement("div");
-    titleDiv.className = "title";
-    titleDiv.textContent = r.title || r.sTitle || "(untitled)";
-
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = (r.sTitle && r.sArtist) ? `${r.sTitle} — ${r.sArtist}` : (r.sArtist || "");
-
-    const start = document.createElement("div");
-    start.className = "start";
-    start.textContent = fmtTime(r.startSec || 0);
-
-    // Small badge in the corner showing the assigned keyboard hotkey (if any).
-    const hk = document.createElement("div");
-    hk.className = "hotkey-badge";
-
-    const dot = document.createElement("div");
-    dot.className = "edited-dot";
-
-    cell.appendChild(start);
-    cell.appendChild(titleDiv);
-    cell.appendChild(meta);
-    cell.appendChild(hk);
-    cell.appendChild(dot);
-
-    applyPendingToCell(cell);
-    // Gray out tiles that have already been played (flag set in the database).
-    if (r.played) cell.classList.add("played");
-
-    bindTaps(cell);
-    grid.appendChild(cell);
+  rows.forEach((r, index) => {
+    const cell = createPlaybackCell(r);
+    const absent = lineup && preferences.absent[r.pbUUID] === true;
+    cell.setAttribute("aria-disabled", String(!loaded || absent));
+    if (absent) cell.title = "Absent for this game. Mark present to enable playback.";
+    grid.appendChild(lineup ? createLineupRow(cell, g.uuid, index, preferences, !!loaded) : cell);
   });
 
-  // Restore or initialize keyboard focus on this tab's first cell
-  const firstCell = grid.querySelector(".cell");
-  if (firstCell) setFocusedCell(firstCell, false);
+  const cells = Array.from(grid.querySelectorAll(".cell"));
+  const target = cells.find(cell => cell.dataset.pbuuid === focusUUID) || cells[0];
+  setFocusedCell(target || null, false);
+  if (sameGroup) scroller.scrollTop = scrollTop;
+  if (sameGroup && target && focusPart) {
+    const control = target.closest(".lineup-row")?.querySelector(focusPart) || target;
+    control.focus({ preventScroll: true });
+  }
+  restorePlayingHighlight();
+}
+
+function playbackOrder(groupUUID) {
+  return queryAll("SELECT playbackUUIDRaw AS uuid, orderIndex FROM Playback WHERE playbackGroupUUIDRaw=? ORDER BY orderIndex", [groupUUID]);
+}
+
+function writePlaybackOrder(groupUUID, order, revision = getWorkingDatabaseRevision()) {
+  if (!db || revision !== getWorkingDatabaseRevision() || !groups.some(group => group.uuid === groupUUID)) {
+    showToast("The library changed. Try reordering again.");
+    return false;
+  }
+  const rows = playbackOrder(groupUUID);
+  const wanted = new Set(order);
+  if (order.length !== rows.length || wanted.size !== rows.length || rows.some(row => !wanted.has(row.uuid))) {
+    showToast("The tracks on this tab changed. Try reordering again.");
+    return false;
+  }
+  if (rows.every((row, index) => row.uuid === order[index])) return false;
+  const previous = new Map(rows.map(row => [row.uuid, row.orderIndex]));
+  const timestamp = Date.now() / 1000;
+  if (!mutateDatabase(() => {
+    order.forEach((uuid, index) => {
+      if (previous.get(uuid) !== index) db.run(
+        "UPDATE Playback SET orderIndex=?, updatedTimestamp1970=? WHERE playbackUUIDRaw=? AND playbackGroupUUIDRaw=?",
+        [index, timestamp, uuid, groupUUID]);
+    });
+    const applied = playbackOrder(groupUUID);
+    if (applied.length !== order.length || applied.some((row, index) => row.uuid !== order[index])) {
+      throw new Error("The database did not accept the requested order.");
+    }
+  })) return false;
+  markTabOpDirty();
+  renderGrid();
+  return true;
+}
+
+function focusLineupHandle(uuid) {
+  const row = Array.from(document.querySelectorAll("#grid .lineup-row")).find(item => item.dataset.pbuuid === uuid);
+  const handle = row?.querySelector(".lineup-handle");
+  handle?.focus({ preventScroll: true });
+  row?.scrollIntoView?.({ block: "nearest" });
+}
+
+function announceLineupMove(uuid, order) {
+  document.getElementById("lineup-announcement").textContent =
+    `${tileDisplayName(uuid)} moved to position ${order.indexOf(uuid) + 1} of ${order.length}.`;
+  focusLineupHandle(uuid);
+}
+
+function moveLineupPlayer(uuid, groupUUID, direction) {
+  if (tabLayout(groupUUID) !== "lineup" || ![-1, 1].includes(direction)) return false;
+  const order = playbackOrder(groupUUID).map(row => row.uuid);
+  const index = order.indexOf(uuid);
+  const next = index + direction;
+  if (index < 0 || next < 0 || next >= order.length) return false;
+  [order[index], order[next]] = [order[next], order[index]];
+  const changed = writePlaybackOrder(groupUUID, order);
+  if (changed) announceLineupMove(uuid, order);
+  return changed;
+}
+
+function showLineupMoveMenu(uuid, groupUUID, handle) {
+  cancelLineupDrag();
+  const order = playbackOrder(groupUUID).map(row => row.uuid);
+  const index = order.indexOf(uuid);
+  if (index < 0 || tabLayout(groupUUID) !== "lineup") return;
+  const menu = document.getElementById("ctx-menu");
+  contextMenuReturnFocus = handle;
+  menu.replaceChildren();
+  const title = document.createElement("div");
+  title.className = "ctx-title";
+  title.textContent = tileDisplayName(uuid);
+  menu.appendChild(title);
+  addCtxItem(menu, "Move Up", () => moveLineupPlayer(uuid, groupUUID, -1), index === 0);
+  addCtxItem(menu, "Move Down", () => moveLineupPlayer(uuid, groupUUID, 1), index === order.length - 1);
+  const rect = handle.getBoundingClientRect();
+  positionContextMenu(menu, rect.left, rect.bottom);
+  menu.querySelector(".ctx-item:not(:disabled)")?.focus({ preventScroll: true });
+}
+
+function cancelLineupDrag() {
+  lineupDrag?.finish(true);
+}
+
+function bindLineupDrag(handle, row, groupUUID) {
+  handle.addEventListener("contextmenu", event => event.preventDefault());
+  handle.addEventListener("pointerdown", event => {
+    if (event.button !== 0 || event.isPrimary === false || handle.disabled) return;
+    cancelLineupDrag();
+    if (databaseImporting || !db || !row.isConnected || tabLayout(groupUUID) !== "lineup") return;
+    const grid = document.getElementById("grid");
+    const scroller = document.getElementById("grid-container");
+    const order = playbackOrder(groupUUID).map(item => item.uuid);
+    const uuid = row.dataset.pbuuid;
+    if (!order.includes(uuid)) return;
+    const identity = databaseIdentity;
+    const revision = getWorkingDatabaseRevision();
+    const pointerId = event.pointerId;
+    const state = {
+      active: false, x: event.clientX, y: event.clientY,
+      startX: event.clientX, startY: event.clientY,
+      frame: null, lastFrame: null, target: -1, guarded: false, finish,
+    };
+    lineupDrag = state;
+    const current = () => lineupDrag === state && row.isConnected && databaseIdentity === identity &&
+      revision === getWorkingDatabaseRevision() && !databaseImporting && !browserCleanupActive() &&
+      groups[activeTabIdx]?.uuid === groupUUID && grid.dataset.layout === "lineup";
+    const clearMarker = () => grid.querySelectorAll(".lineup-drop-before, .lineup-drop-after")
+      .forEach(item => item.classList.remove("lineup-drop-before", "lineup-drop-after"));
+    const updateTarget = () => {
+      clearMarker();
+      const bounds = scroller.getBoundingClientRect();
+      if (state.x < bounds.left || state.x > bounds.right || state.y < bounds.top || state.y > bounds.bottom) {
+        state.target = -1;
+        return;
+      }
+      const others = Array.from(grid.querySelectorAll(".lineup-row")).filter(item => item !== row);
+      const next = others.findIndex(item => {
+        const rect = item.getBoundingClientRect();
+        return state.y < rect.top + rect.height / 2;
+      });
+      state.target = next < 0 ? others.length : next;
+      if (next >= 0) others[next].classList.add("lineup-drop-before");
+      else (others.at(-1) || row).classList.add("lineup-drop-after");
+    };
+    const scroll = time => {
+      if (!current() || document.visibilityState === "hidden") { finish(true); return; }
+      const bounds = scroller.getBoundingClientRect();
+      const edge = Math.min(64, bounds.height / 4);
+      const elapsed = state.lastFrame === null ? 16 : Math.min(32, time - state.lastFrame);
+      state.lastFrame = time;
+      if (state.x >= bounds.left && state.x <= bounds.right && state.y >= bounds.top && state.y <= bounds.bottom && edge > 0) {
+        const proximity = state.y < bounds.top + edge ? (state.y - bounds.top - edge) / edge :
+          state.y > bounds.bottom - edge ? (state.y - bounds.bottom + edge) / edge : 0;
+        if (proximity) {
+          scroller.scrollTop += proximity * elapsed * 0.6;
+          updateTarget();
+        }
+      }
+      state.frame = requestAnimationFrame(scroll);
+    };
+    const moved = e => {
+      if (e.pointerId !== pointerId) return;
+      if (!current()) { finish(true); return; }
+      state.x = e.clientX;
+      state.y = e.clientY;
+      if (!state.active && Math.hypot(state.x - state.startX, state.y - state.startY) < 8) return;
+      e.preventDefault();
+      if (!state.active) {
+        state.active = true;
+        hideCellContextMenu();
+        handle.focus({ preventScroll: true });
+        guardPointerReleaseClick(pointerId);
+        state.guarded = true;
+        row.classList.add("lineup-dragging");
+        if (!handle.setPointerCapture) {
+          finish(true);
+          showToast("Dragging is unavailable here. Activate the handle to use Move Up or Move Down.");
+          return;
+        }
+        try { handle.setPointerCapture(pointerId); }
+        catch (error) {
+          finish(true);
+          if (!["NotFoundError", "InvalidStateError"].includes(error.name)) throw error;
+          showToast("The drag was canceled. Try again, or activate the handle to move this player.");
+          return;
+        }
+        state.frame = requestAnimationFrame(scroll);
+      }
+      updateTarget();
+    };
+    const ended = e => {
+      if (e.pointerId !== pointerId) return;
+      state.x = e.clientX;
+      state.y = e.clientY;
+      if (state.active) updateTarget();
+      finish(e.type !== "pointerup");
+    };
+    const anotherPointer = e => { if (e.pointerId !== pointerId) finish(true); };
+    const hidden = () => { if (document.visibilityState === "hidden") finish(true); };
+    const canceledListener = event => {
+      // Touch capture can transfer from the decorative grip to its handle.
+      if (event.type !== "lostpointercapture" || event.target === handle) finish(true);
+    };
+    const keydown = e => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        finish(true);
+      }
+    };
+    function finish(canceled) {
+      if (lineupDrag !== state) return;
+      const commit = !canceled && state.active && state.target >= 0 && current() && tabLayout(groupUUID) === "lineup";
+      lineupDrag = null;
+      if (state.frame !== null) cancelAnimationFrame(state.frame);
+      document.removeEventListener("pointermove", moved, true);
+      document.removeEventListener("pointerup", ended, true);
+      document.removeEventListener("pointercancel", ended, true);
+      document.removeEventListener("pointerdown", anotherPointer, true);
+      document.removeEventListener("visibilitychange", hidden);
+      document.removeEventListener("keydown", keydown, true);
+      window.removeEventListener("blur", canceledListener);
+      window.removeEventListener("pagehide", canceledListener);
+      handle.removeEventListener("lostpointercapture", canceledListener);
+      if (handle.hasPointerCapture?.(pointerId)) handle.releasePointerCapture(pointerId);
+      row.classList.remove("lineup-dragging");
+      clearMarker();
+      if (canceled && !state.guarded) guardPointerReleaseClick(pointerId);
+      if (commit) {
+        const next = order.filter(id => id !== uuid);
+        next.splice(state.target, 0, uuid);
+        if (writePlaybackOrder(groupUUID, next, revision)) announceLineupMove(uuid, next);
+      } else if (state.active) {
+        document.getElementById("lineup-announcement").textContent = "Reordering canceled. The order was not changed.";
+      }
+    }
+    document.addEventListener("pointermove", moved, { capture: true, passive: false });
+    document.addEventListener("pointerup", ended, true);
+    document.addEventListener("pointercancel", ended, true);
+    document.addEventListener("pointerdown", anotherPointer, true);
+    document.addEventListener("visibilitychange", hidden);
+    document.addEventListener("keydown", keydown, true);
+    window.addEventListener("blur", canceledListener);
+    window.addEventListener("pagehide", canceledListener);
+    handle.addEventListener("lostpointercapture", canceledListener);
+  });
 }
 
 // =====================================================================
@@ -899,6 +1441,7 @@ function getGridLayout() {
   const grid = document.getElementById("grid");
   const cells = Array.from(grid.querySelectorAll(".cell"));
   if (cells.length === 0) return null;
+  if (grid.dataset.layout === "lineup") return { cells, cols: 1 };
   const firstTop = cells[0].offsetTop;
   let cols = cells.findIndex(c => c.offsetTop > firstTop);
   if (cols === -1) cols = cells.length;
@@ -1004,6 +1547,7 @@ function bindTaps(cell) {
   const TAP_WINDOW = 280;
   cell.addEventListener("click", (e) => {
     e.preventDefault();
+    if (!allowLineupPlayback(cell.dataset.pbuuid)) { clearTapSequence(); setFocusedCell(cell); return; }
     cancelIdleCheck();
     setFocusedCell(cell);
     tapCount++;
@@ -1013,6 +1557,7 @@ function bindTaps(cell) {
       const n = tapCount;
       tapCount = 0;
       if (!cell.isConnected) return;
+      if (!allowLineupPlayback(cell.dataset.pbuuid)) return;
       if (n === 1) {
         smartSingleTap(cell);
       } else {
@@ -1034,6 +1579,7 @@ function bindTaps(cell) {
 
 async function smartSingleTap(cell) {
   try {
+    if (!allowLineupPlayback(cell.dataset.pbuuid)) return false;
     if (nowPlaying && nowPlaying.uuid === cell.dataset.pbuuid) {
       // Same cell: toggle pause/resume
       if (nowPlaying.paused) {
@@ -1970,6 +2516,10 @@ function queueTransport(action, operation, retry, intent = true) {
       return true;
     } catch (error) {
       if (current()) {
+        if (error instanceof LineupPlaybackUnavailableError) {
+          showToast(error.message);
+          return false;
+        }
         if (intent) idleBlocked = true;
         updateIdleControls();
         reportTransportFailure(action, error, retry);
@@ -2175,6 +2725,7 @@ function setLatency(ms, ok = true) {
 }
 
 async function startPlayback(cell) {
+  if (!allowLineupPlayback(cell.dataset.pbuuid)) return false;
   const trackId = cell.dataset.trackid;
   if (!trackId) { showToast("No Spotify track on this button."); return false; }
   const snapshot = cell.cloneNode(true);
@@ -2188,16 +2739,22 @@ async function startPlayback(cell) {
   const targetVol = (!isNaN(rawVol) && rawVol >= 0) ? Math.round(rawVol * 100) : getDefaultVolumePct();
 
   return queueTransport("Start", async current => {
+    const permitted = () => {
+      if (!current()) return false;
+      assertLineupPlayback(snapshot.dataset.pbuuid);
+      return true;
+    };
+    if (!permitted()) return;
     const dev = await ensureDevice();
-    if (!current()) return;
+    if (!permitted()) return;
     const canVolume = canControlVolume();
-    if (canVolume) await sendVolume(effFadeIn > 0 ? 0 : targetVol);
-    if (!current()) return;
+    if (canVolume) await sendVolume(effFadeIn > 0 ? 0 : targetVol, permitted);
+    if (!permitted()) return;
     const t0 = performance.now();
     try {
       await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
         method: "PUT", body: JSON.stringify(body),
-      });
+      }, permitted);
     } catch (error) { setLatency(performance.now() - t0, false); throw error; }
     if (!current()) return;
     setLatency(performance.now() - t0);
@@ -2303,21 +2860,28 @@ async function pausePlayback() {
 
 async function resumePlayback() {
   if (!nowPlaying) return false;
+  if (!allowLineupPlayback(nowPlaying.uuid)) return false;
   return queueTransport("Resume", async current => {
+    const permitted = () => {
+      if (!current() || !nowPlaying) return false;
+      assertLineupPlayback(nowPlaying.uuid);
+      return true;
+    };
+    if (!permitted()) return;
     if (nowPlaying?.disallows?.resuming) throw new Error("Spotify currently disallows resuming this item.");
     const dev = await ensureDevice();
-    if (!current()) return;
+    if (!permitted()) return;
     if (progress?.stopFiring && canControlVolume()) {
-      await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid));
+      await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid), permitted);
     }
-    if (!current()) return;
+    if (!permitted()) return;
     const restore = idleResume?.uuid === nowPlaying.uuid ? {
       uris: [`spotify:track:${idleResume.trackId}`],
       position_ms: Math.max(0, Math.min(progress?.durationMs || Infinity, Math.round(currentPositionMs()))),
     } : null;
     await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
       method: "PUT", ...(restore ? { body: JSON.stringify(restore) } : {}),
-    });
+    }, permitted);
     if (!current() || !nowPlaying) return;
     clearIdlePlayback(true);
     setPlaybackPaused(false);
@@ -2326,7 +2890,12 @@ async function resumePlayback() {
 
 function updatePauseBtn() {
   const b = document.getElementById("np-pause");
-  if (b) b.textContent = (nowPlaying && nowPlaying.paused) ? "▶" : "⏸";
+  if (b) {
+    b.textContent = (nowPlaying && nowPlaying.paused) ? "▶" : "⏸";
+    const reason = nowPlaying?.paused ? lineupPlaybackReason(nowPlaying.uuid) : "";
+    b.disabled = !!reason;
+    b.title = reason || "Play / Pause";
+  }
   setBallSpin(!!(nowPlaying && !nowPlaying.paused));
 }
 
@@ -2366,11 +2935,11 @@ async function fadeOut(_cell) {
   return doFade(nowPlaying ? cellEffectiveVolumePct(nowPlaying.uuid) : getDefaultVolumePct(), 0, dur);
 }
 
-async function sendVolume(percent) {
+async function sendVolume(percent, requestCurrent = null) {
   if (!canControlVolume()) return false;
   percent = Math.max(0, Math.min(100, Math.round(percent)));
   try {
-    await api(`/me/player/volume?volume_percent=${percent}`, { method: "PUT" });
+    await api(`/me/player/volume?volume_percent=${percent}`, { method: "PUT" }, requestCurrent);
     return true;
   } catch (error) {
     if (error instanceof VolumeControlUnavailableError) return false;
@@ -2683,6 +3252,7 @@ function originalStartMs(pbUUID) {
 // Seek the player to positionMs and resync local progress. callApi=false skips the network call (used while dragging).
 async function seekTo(positionMs, callApi) {
   if (!progress) return false;
+  if (callApi && nowPlaying?.paused && !allowLineupPlayback(nowPlaying.uuid)) return false;
   positionMs = Math.max(0, Math.min(progress.durationMs || positionMs, Math.round(positionMs)));
   const observed = progress;
   const updateClock = () => {
@@ -2702,12 +3272,18 @@ async function seekTo(positionMs, callApi) {
     return false;
   }
   return queueTransport("Seek", async current => {
+    const permitted = () => {
+      if (!current() || progress !== observed) return false;
+      if (nowPlaying?.paused) assertLineupPlayback(nowPlaying.uuid);
+      return true;
+    };
+    if (!permitted()) return;
     if (nowPlaying?.disallows?.seeking) throw new Error("Spotify currently disallows seeking this item.");
     if (progress?.stopFiring && nowPlaying && canControlVolume()) {
-      await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid));
+      await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid), permitted);
     }
-    if (!current()) return;
-    await api(`/me/player/seek?position_ms=${positionMs}`, { method: "PUT" });
+    if (!permitted()) return;
+    await api(`/me/player/seek?position_ms=${positionMs}`, { method: "PUT" }, permitted);
     if (current()) updateClock();
   }, () => seekTo(positionMs, true));
 }
@@ -2847,9 +3423,7 @@ function setupBarInteractions() {
     } else if (kind === "caret" && nowPlaying) {
       setPendingStart(nowPlaying.uuid, ms);
       // Restart playback at the new start so user can hear it
-      if (nowPlaying.paused) {
-        await resumePlayback();
-      }
+      if (nowPlaying.paused && !await resumePlayback()) return;
       await seekTo(ms, true);
       // Pop up the fine-nudge slider, centred on this freshly-set cue point.
       showCueFine(ms, "start");
@@ -2978,7 +3552,7 @@ async function setStopFromBar(ms) {
   if (!nowPlaying || !progress) return;
   const uuid = nowPlaying.uuid;
   setPendingStop(uuid, ms);
-  if (nowPlaying.paused) await resumePlayback();
+  if (nowPlaying.paused && !await resumePlayback()) return;
   if (!nowPlaying || nowPlaying.uuid !== uuid) return;
   // Pre-roll: start 4s before the end cue (clamped to the track's start).
   await seekTo(Math.max(0, ms - 4000), true);
@@ -3040,6 +3614,9 @@ async function applyCueFine(offsetMs) {
   // audible re-cue when nothing actually changed since the last seek.
   const seekKey = `${cueFineMode}:${target}`;
   const isDuplicate = (seekKey === cueFineLastSeek);
+  const unconfirmed = () => {
+    if (cueFineGen === gen && cueFineLastSeek === seekKey) cueFineLastSeek = null;
+  };
   if (cueFineMode === "stop") {
     // Editing the end cue: save the new stop point, then jump to 4s before it so
     // the ending plays for preview. Enforcement (in renderProgress) handles the
@@ -3048,9 +3625,9 @@ async function applyCueFine(offsetMs) {
     if (isDuplicate) return;
     cueFineLastSeek = seekKey;
     if (cueFineGen !== gen || !nowPlaying || nowPlaying.uuid !== uuid) return;
-    if (nowPlaying.paused) await resumePlayback();
+    if (nowPlaying.paused && !await resumePlayback()) { unconfirmed(); return; }
     if (cueFineGen !== gen || !nowPlaying || nowPlaying.uuid !== uuid) return;
-    await seekTo(Math.max(0, target - 4000), true);
+    if (!await seekTo(Math.max(0, target - 4000), true)) unconfirmed();
     return;
   }
   // Save first (exact=true keeps even tiny nudges). This persists regardless of
@@ -3061,9 +3638,9 @@ async function applyCueFine(offsetMs) {
   // If the track changed while we were saving, don't touch the player — the
   // saved value still belongs to the right button.
   if (cueFineGen !== gen || !nowPlaying || nowPlaying.uuid !== uuid) return;
-  if (nowPlaying.paused) await resumePlayback();
+  if (nowPlaying.paused && !await resumePlayback()) { unconfirmed(); return; }
   if (cueFineGen !== gen || !nowPlaying || nowPlaying.uuid !== uuid) return;
-  await seekTo(target, true);
+  if (!await seekTo(target, true)) unconfirmed();
 }
 
 // =====================================================================
@@ -3568,6 +4145,13 @@ function hideCellContextMenu() {
   contextMenuReturnFocus = null;
 }
 
+function positionContextMenu(menu, x, y) {
+  menu.classList.remove("hidden");
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8)) + "px";
+}
+
 // =====================================================================
 // Tile copy / rename / delete
 // ---------------------------------------------------------------------
@@ -3843,14 +4427,7 @@ function showCellContextMenu(cell, x, y) {
     menu.appendChild(cancel);
   }
 
-  // Position, then clamp to viewport
-  menu.classList.remove("hidden");
-  const r = menu.getBoundingClientRect();
-  let nx = x, ny = y;
-  if (nx + r.width  > window.innerWidth)  nx = window.innerWidth  - r.width  - 8;
-  if (ny + r.height > window.innerHeight) ny = window.innerHeight - r.height - 8;
-  menu.style.left = nx + "px";
-  menu.style.top  = ny + "px";
+  positionContextMenu(menu, x, y);
 }
 
 // =====================================================================
@@ -3905,6 +4482,22 @@ function showTabContextMenu(tabIdx, x, y) {
 
   addCtxItem(menu, "Rename…", () => tabRename(tabIdx));
 
+  const preferences = getLineupPreferences();
+  addCtxHeader(menu, "Layout (saved in this browser)");
+  for (const [value, label] of [["standard", "Standard"], ["lineup", "Lineup"]]) {
+    const item = addCtxItem(menu, label, () => { void setTabLayout(g.uuid, value); }, !preferences);
+    item.setAttribute("aria-label", label);
+    item.setAttribute("aria-pressed", String(tabLayout(g.uuid, preferences) === value));
+  }
+  if (tabLayout(g.uuid, preferences) === "lineup") {
+    addCtxHeader(menu, "Attendance");
+    addCtxItem(menu, "Mark everyone present", () => {
+      if (confirm(`Mark everyone on "${g.name}" present?\n\nThe batting order and played marks will not change.`)) {
+        void markEveryonePresent(g.uuid);
+      }
+    });
+  }
+
   addCtxHeader(menu, "Sort by");
   addCtxItem(menu, "Song Name",   () => tabSort(tabIdx, "name"));
   addCtxItem(menu, "Artist Name", () => tabSort(tabIdx, "artist"));
@@ -3918,13 +4511,7 @@ function showTabContextMenu(tabIdx, x, y) {
   const del = addCtxItem(menu, "Delete tab…", () => tabDelete(tabIdx));
   del.classList.add("ctx-cancel");
 
-  menu.classList.remove("hidden");
-  const r = menu.getBoundingClientRect();
-  let nx = x, ny = y;
-  if (nx + r.width  > window.innerWidth)  nx = window.innerWidth  - r.width  - 8;
-  if (ny + r.height > window.innerHeight) ny = window.innerHeight - r.height - 8;
-  menu.style.left = nx + "px";
-  menu.style.top  = ny + "px";
+  positionContextMenu(menu, x, y);
 }
 
 function addCtxItem(menu, label, onClick, disabled) {
@@ -3956,6 +4543,7 @@ function tabRename(idx) {
     [trimmed, Date.now() / 1000, g.uuid]))) return;
   refreshGroupsFromDB();
   renderTabs();
+  renderGrid();
   markTabOpDirty();
 }
 
@@ -3974,6 +4562,7 @@ function tabMove(idx, dir) {
   if (newIdx >= 0) activeTabIdx = newIdx;
   localStorage.setItem(LS_TAB, String(activeTabIdx));
   renderTabs();
+  renderGrid();
   markTabOpDirty();
 }
 
@@ -4043,13 +4632,7 @@ function tabSort(idx, kind) {
       [rows[i], rows[j]] = [rows[j], rows[i]];
     }
   }
-  const ts = Date.now() / 1000;
-  if (!mutateDatabase(() => rows.forEach((r, i) => {
-    db.run("UPDATE Playback SET orderIndex = ?, updatedTimestamp1970 = ? WHERE playbackUUIDRaw = ?",
-      [i, ts, r.pbUUID]);
-  }))) return;
-  renderGrid();
-  markTabOpDirty();
+  writePlaybackOrder(g.uuid, rows.map(row => row.pbUUID));
 }
 
 function cleanupOrphanedPending() {
@@ -4108,6 +4691,7 @@ function setDialogOpen(id, open) {
   const dialog = document.getElementById(id);
   if (!dialog || (!open && dialog.classList.contains("hidden"))) return;
   if (open) {
+    cancelLineupDrag();
     dialogReturnFocus.set(id, document.activeElement);
     document.querySelectorAll('[role="dialog"]').forEach(other => {
       if (other !== dialog) other.classList.add("hidden");
@@ -4135,7 +4719,7 @@ function wireAccessibleControls() {
     if (!el.hasAttribute("aria-label")) el.setAttribute("aria-label", el.title);
   });
   document.getElementById("grid").addEventListener("focusin", e => {
-    const cell = e.target.closest(".cell");
+    const cell = e.target.closest(".cell") || e.target.closest(".lineup-row")?.querySelector(".cell");
     if (cell) setFocusedCell(cell, false);
   });
   document.addEventListener("keydown", e => {
@@ -5234,7 +5818,14 @@ window.addEventListener("storage", e => {
     idleFailure = null;
     updateIdleControls();
     if (idleReady && idleEnabled()) void checkIdlePlayback();
+  } else if (db && e.key === lineupStorageKey() && !browserCleanupActive()) {
+    if (getLineupPreferences()) clearLineupFailure();
+    refreshLineupView();
   }
+});
+
+window.addEventListener("pageshow", event => {
+  if (event.persisted && db && !browserCleanupActive()) refreshLineupView();
 });
 
 window.addEventListener("pageshow", event => {
@@ -5505,7 +6096,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   //  - Ignore when typing in an input field
   document.addEventListener("keydown", (e) => {
     const t = e.target;
-    if (e.defaultPrevented || e.repeat) return;
+    if (e.defaultPrevented || e.repeat || lineupDrag) return;
     if (t?.closest('input, textarea, select, [contenteditable="true"]')) return;
     if (t?.closest('button, a, [role="button"]') && !t.closest(".cell")) return;
     if (t?.closest("#ctx-menu")) return;
