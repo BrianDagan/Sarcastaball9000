@@ -1120,6 +1120,62 @@ function createLineupRow(cell, groupUUID, index, preferences, readable) {
   return row;
 }
 
+let lineupSizingFrame = null;
+let lineupSizingArea = null;
+
+function fitLineupRows() {
+  const grid = document.getElementById("grid");
+  const scroller = document.getElementById("grid-container");
+  const count = grid.querySelectorAll(".lineup-row").length;
+  if (grid.dataset.layout !== "lineup" || !count) {
+    delete grid.dataset.density;
+    grid.style.removeProperty("--lineup-row-height");
+    lineupSizingArea = null;
+    return;
+  }
+  const height = scroller.clientHeight, width = scroller.clientWidth;
+  if (!height || !width) return;
+  const previousDensity = grid.dataset.density;
+  const previousHeight = grid.style.getPropertyValue("--lineup-row-height");
+  grid.dataset.density = "roomy";
+  grid.style.removeProperty("--lineup-row-height");
+  if (grid.getBoundingClientRect().height > height) {
+    grid.dataset.density = "tight";
+    if (grid.getBoundingClientRect().height > height) {
+      grid.dataset.density = "compact";
+      const style = getComputedStyle(grid);
+      const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+      const gaps = parseFloat(style.rowGap) * (count - 1);
+      const rowHeight = Math.max(28, Math.min(64, Math.floor((height - padding - gaps) / count)));
+      grid.style.setProperty("--lineup-row-height", `${rowHeight}px`);
+    }
+  }
+  if (lineupDrag && (lineupSizingArea?.height !== height || lineupSizingArea?.width !== width ||
+      previousDensity !== grid.dataset.density || previousHeight !== grid.style.getPropertyValue("--lineup-row-height"))) {
+    cancelLineupDrag();
+  }
+  lineupSizingArea = { width, height };
+  const focusedRow = document.activeElement?.closest("#grid .lineup-row");
+  focusedRow?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+}
+
+function scheduleLineupSizing() {
+  if (lineupSizingFrame !== null) return;
+  lineupSizingFrame = requestAnimationFrame(() => {
+    lineupSizingFrame = null;
+    fitLineupRows();
+  });
+}
+
+function setupLineupSizing() {
+  // Observe the available space, not the grid whose content we are resizing.
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(scheduleLineupSizing).observe(document.getElementById("grid-container"));
+  }
+  window.addEventListener("resize", scheduleLineupSizing);
+  window.visualViewport?.addEventListener("resize", scheduleLineupSizing);
+}
+
 function renderGrid() {
   cancelLineupDrag();
   const grid = document.getElementById("grid");
@@ -1145,7 +1201,7 @@ function renderGrid() {
     grid.removeAttribute("role");
     grid.removeAttribute("aria-label");
   }
-  if (!g) { setFocusedCell(null, false); return; }
+  if (!g) { fitLineupRows(); setFocusedCell(null, false); return; }
   const rows = queryAll(`
     SELECT
       p.playbackUUIDRaw    AS pbUUID,
@@ -1179,6 +1235,7 @@ function renderGrid() {
     grid.appendChild(lineup ? createLineupRow(cell, g.uuid, index, preferences, !!loaded) : cell);
   });
 
+  fitLineupRows();
   const cells = Array.from(grid.querySelectorAll(".cell"));
   const target = cells.find(cell => cell.dataset.pbuuid === focusUUID) || cells[0];
   setFocusedCell(target || null, false);
@@ -4374,6 +4431,20 @@ function showCellContextMenu(cell, x, y) {
   titleDiv.textContent = (cell.querySelector(".title")?.textContent || "Cell");
   menu.appendChild(titleDiv);
 
+  if (cell.closest(".lineup-row")) {
+    titleDiv.classList.add("ctx-lineup-title");
+    const details = document.createElement("div");
+    details.className = "ctx-lineup-details";
+    const song = document.createElement("p");
+    song.textContent = cell.querySelector(".meta")?.textContent || "No song details";
+    const cues = document.createElement("p");
+    const start = Number(cell.dataset.startms);
+    const stop = Number(cell.dataset.stopms);
+    cues.textContent = `Start: ${fmtTimeCc(start)} | End: ${stop > 0 ? fmtTimeCc(stop) : "Track end"}`;
+    details.append(song, cues);
+    menu.appendChild(details);
+  }
+
   // --- Per-tile actions (copy / rename / delete) ---
   const addItem = (label, handler, extraClass) => {
     const it = document.createElement("button");
@@ -6056,6 +6127,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (clearPlayedBtn) clearPlayedBtn.onclick = clearPlayedOnTab;
   // Wire up the scrollable tab strip (arrows, drag, edge fades).
   setupTabScroller();
+  setupLineupSizing();
   document.getElementById("btn-refresh-db").onclick = () => {
     pickDatabaseFile();
   };

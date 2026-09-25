@@ -55,6 +55,30 @@ test("layout and attendance change only browser preferences, never SQLite or dir
   assert.equal(app.run("getGridLayout().cols"), 1);
 });
 
+test("Lineup menus expose effective fractional cues and safely render secondary song details without edits", async t => {
+  const app = await lineupApp(t);
+  await call(app, "setTabLayout", GROUP, "lineup");
+  app.window.testCell = cell(app);
+  app.run(`window.testCell.dataset.startms = "1250"; window.testCell.dataset.stopms = "45230";
+    window.testCell.querySelector('.title').textContent = "<img src=x> Synthetic player with a long name";
+    window.testCell.querySelector('.meta').textContent = "<b>Synthetic song</b> - Synthetic artist";`);
+  const bytes = Buffer.from(app.run("db.export()"));
+  const before = app.run("pendingCount()");
+  app.run("showCellContextMenu(window.testCell, 10, 10)");
+  const menu = app.window.document.getElementById("ctx-menu");
+  assert.equal(menu.querySelector(".ctx-lineup-title").textContent, "<img src=x> Synthetic player with a long name");
+  assert.equal(menu.querySelector(".ctx-lineup-details p").textContent, "<b>Synthetic song</b> - Synthetic artist");
+  assert.match(menu.querySelector(".ctx-lineup-details").textContent, /Start: 0:01\.25 \| End: 0:45\.23/);
+  assert.equal(menu.querySelectorAll("img, b").length, 0);
+  assert.ok(Array.from(menu.querySelectorAll(".ctx-item")).some(item => /Copy song/.test(item.textContent)));
+  assert.deepEqual(Buffer.from(app.run("db.export()")), bytes);
+  assert.equal(app.run("pendingCount()"), before);
+  assert.equal(app.run("nowPlaying"), null);
+  await call(app, "setTabLayout", GROUP, "standard");
+  app.run("showCellContextMenu(document.querySelector('#grid .cell'), 10, 10)");
+  assert.equal(menu.querySelector(".ctx-lineup-details"), null);
+});
+
 test("layout follows a group's UUID through rename and tab reordering, not its title or index", async t => {
   const app = await lineupApp(t);
   await call(app, "setTabLayout", GROUP, "lineup");

@@ -159,6 +159,21 @@ a **Present** checkbox. Song titles, cues, colors, hotkeys and played marks
 retain their existing meanings. Holding/right-clicking the song still opens
 its complete action menu, including Copy song.
 
+There is **no fixed player-count limit**. Lineup adapts to the available height,
+including rotation and the now-playing bar. It first reduces vertical spacing;
+when needed, it uses compact single-line rows to keep more players visible.
+Compact rows retain names, numbers, drag handles, Present/Absent controls and
+state indicators. Song/artist and effective start/end cue details are available
+in the song's context menu without starting playback; long player names are
+also shown there in full.
+
+The normal iPad portrait/landscape layouts accommodate 15 players, including
+the ordinary playback bar. Compact controls have smaller touch targets than
+roomy rows. Larger rosters, enlarged text, a very short window or expanded
+editing/error panels may still need vertical scrolling: every player remains
+available instead of being hidden or reduced to an unusable size. This is a
+display adjustment only; it does not change the library or require a new import.
+
 Drag the handle to place a row before or after another row on the same tab.
 Near the list's top/bottom edge, the list scrolls to reach additional players.
 Dragging the song body is not a reorder gesture; normal scrolling and pinch

@@ -202,6 +202,46 @@ async function flushTap(page) {
   await page.evaluate(() => transportQueue);
 }
 
+async function lineupDimensions(page) {
+  await page.clock.runFor(48);
+  return page.evaluate(() => {
+    const scroller = document.getElementById("grid-container");
+    const bounds = scroller.getBoundingClientRect();
+    const rows = Array.from(document.querySelectorAll("#grid .lineup-row"));
+    return {
+      count: rows.length,
+      height: scroller.clientHeight,
+      overflowY: scroller.scrollHeight - scroller.clientHeight,
+      overflowX: scroller.scrollWidth - scroller.clientWidth,
+      visible: rows.filter(row => {
+        const rect = row.getBoundingClientRect();
+        return rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1 &&
+          rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1;
+      }).length,
+      controls: rows.flatMap(row => Array.from(row.querySelectorAll(".cell, .lineup-handle, .lineup-attendance, .lineup-present"), element => {
+        const rect = element.getBoundingClientRect();
+        return {
+          height: rect.height, width: rect.width,
+          visible: rect.top >= bounds.top - 1 && rect.bottom <= bounds.bottom + 1 &&
+            rect.left >= bounds.left - 1 && rect.right <= bounds.right + 1,
+        };
+      })),
+    };
+  });
+}
+
+async function expectLineupFits(page, count) {
+  await expect.poll(async () => {
+    const dimensions = await lineupDimensions(page);
+    return { count: dimensions.count, visible: dimensions.visible, overflow: dimensions.overflowY > 1 || dimensions.overflowX > 1 };
+  }).toEqual({ count, visible: count, overflow: false });
+  for (const control of (await lineupDimensions(page)).controls) {
+    expect(control.visible).toBe(true);
+    expect(control.width).toBeGreaterThanOrEqual(24);
+    expect(control.height).toBeGreaterThanOrEqual(24);
+  }
+}
+
 async function pauseWithIdleSilence(page) {
   await page.evaluate(() => {
     window.lineupTest.device.name = "Synthetic iPad";
@@ -437,8 +477,8 @@ for (const interruption of ["tab", "layout", "revision", "library"]) {
 }
 
 test("edge scrolling advances a long lineup while the DOM stays in place until pointer release", async ({ page }) => {
-  await loadLibrary(page, { count: 20 });
-  const original = playerIds(20);
+  await loadLibrary(page, { count: 40 });
+  const original = playerIds(40);
   const from = await center(handle(page, original[0]));
   const bounds = await page.locator("#grid-container").boundingBox();
   await page.mouse.move(from.x, from.y);
@@ -465,7 +505,7 @@ test("edge scrolling advances a long lineup while the DOM stays in place until p
 });
 
 test("row bodies retain native touch scrolling and pinch instead of becoming drag handles", async ({ page }) => {
-  await loadLibrary(page, { count: 20 });
+  await loadLibrary(page, { count: 40 });
   const before = await databaseSnapshot(page);
   expect(await handle(page, ids.firstPlayback).evaluate(element => getComputedStyle(element).touchAction)).toBe("none");
   expect(await cell(page, ids.firstPlayback).evaluate(element => getComputedStyle(element).touchAction)).toBe("manipulation");
@@ -497,7 +537,7 @@ test("row bodies retain native touch scrolling and pinch instead of becoming dra
   await flushTap(page);
   await expect(page.locator(".lineup-dragging")).toHaveCount(0);
   await expect(menu(page)).toBeHidden();
-  await expectOrder(page, playerIds(20));
+  await expectOrder(page, playerIds(40));
   expect(await databaseSnapshot(page)).toEqual(before);
   expect(await calls(page)).toEqual([]);
 });
@@ -542,7 +582,7 @@ test("keyboard row navigation, handle arrows and Move buttons preserve truthful 
 });
 
 test("attendance retains exact position, number, scroll and focus; Standard ignores but retains the flags", async ({ page }) => {
-  const count = 14, index = count - 1;
+  const count = 40, index = count - 1;
   await loadLibrary(page, { count });
   const uuid = playerId(index);
   const before = await databaseSnapshot(page);
@@ -969,6 +1009,7 @@ for (const [width, height] of [[320, 568], [844, 390], [1024, 400]]) {
           sheet.insertRule("body, button, input, .lineup-attendance { font-size: 24px !important; }", sheet.cssRules.length);
         });
       }
+
       const dimensions = await page.evaluate(() => {
         const grid = document.getElementById("grid");
         const scroller = document.getElementById("grid-container");
@@ -981,12 +1022,14 @@ for (const [width, height] of [[320, 568], [844, 390], [1024, 400]]) {
       expect(dimensions.body).toBeLessThanOrEqual(dimensions.viewport + 1);
       expect(dimensions.gridScroll).toBeLessThanOrEqual(dimensions.grid + 1);
       expect(dimensions.availableHeight).toBeGreaterThanOrEqual(44);
+      await lineupDimensions(page);
+      const compact = await page.locator("#grid").getAttribute("data-density") === "compact";
       for (const part of [".lineup-handle", ".cell", ".lineup-attendance"]) {
         const control = row(page, ids.firstPlayback).locator(part);
         await control.scrollIntoViewIfNeeded();
         const bounds = await control.boundingBox();
         expect(bounds.width).toBeGreaterThanOrEqual(44);
-        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(bounds.height).toBeGreaterThanOrEqual(compact ? 24 : 44);
         expect(bounds.x).toBeGreaterThanOrEqual(0);
         expect(bounds.x + bounds.width).toBeLessThanOrEqual(width + 1);
       }
@@ -997,3 +1040,280 @@ for (const [width, height] of [[320, 568], [844, 390], [1024, 400]]) {
     expect(await page.locator('meta[name="viewport"]').getAttribute("content")).not.toContain("user-scalable=no");
   });
 }
+
+for (const [width, height] of [[1024, 768], [768, 1024], [1024, 650], [768, 900]]) {
+  test(`all 15 players fit at ${width}x${height} with the ordinary playback bar hidden, playing and paused`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await loadLibrary(page, { count: 15 });
+    const before = await databaseSnapshot(page);
+    const preferences = await page.evaluate(() => readLineupPreferences());
+    await expectLineupFits(page, 15);
+    await cell(page, ids.firstPlayback).click();
+    await flushTap(page);
+    await expect(page.locator("#nowplaying")).toBeVisible();
+    await expectLineupFits(page, 15);
+    await page.locator("#np-pause").click();
+    await expectLineupFits(page, 15);
+    await expectOrder(page, playerIds(15));
+    expect(await page.evaluate(() => nowPlaying.paused)).toBe(true);
+    expect(await databaseSnapshot(page)).toEqual(before);
+    expect(await page.evaluate(() => readLineupPreferences())).toEqual(preferences);
+    expect((await calls(page)).filter(call => call.method === "PUT").map(call => call.path))
+      .toEqual(["/me/player/play", "/me/player/pause"]);
+  });
+}
+
+test("rotation and playback-bar resizing fit the same 15 DOM rows without changing data, focus or playback", async ({ page }) => {
+  await loadLibrary(page, { count: 15 });
+  await cell(page, ids.firstPlayback).click();
+  await flushTap(page);
+  const checkbox = row(page, playerId(14)).locator(".lineup-present");
+  await checkbox.focus();
+  await page.evaluate(() => {
+    window.sizingRows = Array.from(document.querySelectorAll("#grid .lineup-row"));
+    window.sizingProgress = progress;
+    window.sizingIdleGeneration = idleGeneration;
+  });
+  const before = await databaseSnapshot(page);
+  const preferences = await page.evaluate(() => readLineupPreferences());
+  const requests = await calls(page);
+  for (const [width, height] of [[768, 1024], [1024, 650], [768, 900], [1024, 768]]) {
+    await page.setViewportSize({ width, height });
+    await expectLineupFits(page, 15);
+    await expect(checkbox).toBeFocused();
+    expect(await page.evaluate(() => Array.from(document.querySelectorAll("#grid .lineup-row"))
+      .every((row, index) => row === window.sizingRows[index]))).toBe(true);
+    expect(await page.evaluate(() => progress === window.sizingProgress && idleGeneration === window.sizingIdleGeneration)).toBe(true);
+  }
+  expect(await databaseSnapshot(page)).toEqual(before);
+  expect(await page.evaluate(() => readLineupPreferences())).toEqual(preferences);
+  expect(await calls(page)).toEqual(requests);
+  await page.locator("#np-stop").click();
+  await expect(page.locator("#nowplaying")).toBeHidden();
+  await expectLineupFits(page, 15);
+});
+
+test("small lineups keep roomy targets, and tightening gaps comes before hiding metadata", async ({ page }) => {
+  await loadLibrary(page, { count: 4 });
+  await expect(page.locator("#grid")).toHaveAttribute("data-density", "roomy");
+  for (const part of [".lineup-handle", ".cell", ".lineup-attendance"]) {
+    const bounds = await row(page, ids.firstPlayback).locator(part).boundingBox();
+    expect(bounds.width).toBeGreaterThanOrEqual(44);
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+  }
+  await expect(cell(page, ids.firstPlayback).locator(".meta")).toBeVisible();
+  await page.locator("#in-db-file").setInputFiles({
+    name: "synthetic-ten-players.sqlite", mimeType: "application/octet-stream", buffer: await lineupBytes(10),
+  });
+  await expect(page.locator("#grid .cell")).toHaveCount(10);
+  await expect.poll(() => page.evaluate(() => databaseImporting)).toBe(false);
+  expect(await page.evaluate(uuid => setTabLayout(uuid, "lineup"), ids.firstGroup)).toBe(true);
+  await expectLineupFits(page, 10);
+  await expect(page.locator("#grid")).toHaveAttribute("data-density", "tight");
+  expect((await cell(page, ids.firstPlayback).boundingBox()).height).toBeGreaterThanOrEqual(64);
+  await expect(cell(page, ids.firstPlayback).locator(".meta")).toBeVisible();
+});
+
+test("a roster larger than 15 still fits when space allows, with no count-based truncation", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await loadLibrary(page, { count: 22 });
+  await cell(page, ids.firstPlayback).click();
+  await flushTap(page);
+  await expectLineupFits(page, 22);
+  await expectOrder(page, playerIds(22));
+});
+
+test("short views, expanded panels and enlarged text preserve every player and a usable scroll fallback", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 650 });
+  await loadLibrary(page, { count: 15 });
+  await cell(page, ids.firstPlayback).click();
+  await flushTap(page);
+  await page.locator("#np-pause").click();
+  await expectLineupFits(page, 15);
+  const before = await databaseSnapshot(page);
+  const requests = await calls(page);
+  for (const state of ["editing", "error", "short", "enlarged"]) {
+    await test.step(state, async () => {
+      await page.evaluate(mode => {
+        hideCueFine();
+        const status = document.getElementById("lineup-status");
+        status.classList.add("hidden");
+        if (mode === "editing") showCueFine(0, "start");
+        if (mode === "error") {
+          status.textContent = "Synthetic recoverable settings error. No data was erased.";
+          status.classList.remove("hidden");
+        }
+        if (mode === "enlarged") {
+          const sheet = document.styleSheets[0];
+          sheet.insertRule("body, button, input, .lineup-attendance { font-size: 28px !important; }", sheet.cssRules.length);
+        }
+      }, state);
+      if (state === "short") await page.setViewportSize({ width: 844, height: 390 });
+      if (state === "enlarged") await page.setViewportSize({ width: 1024, height: 650 });
+      await expect.poll(async () => (await lineupDimensions(page)).overflowY).toBeGreaterThan(0);
+      const dimensions = await lineupDimensions(page);
+      expect(dimensions.count).toBe(15);
+      expect(dimensions.overflowX).toBeLessThanOrEqual(1);
+      for (const control of dimensions.controls) expect(control.height).toBeGreaterThanOrEqual(24);
+      await row(page, playerId(14)).locator(".lineup-present").scrollIntoViewIfNeeded();
+      await expect(row(page, playerId(14)).locator(".lineup-present")).toBeInViewport();
+      const unclippedText = await cell(page, playerId(14)).evaluate(element => {
+        const title = element.querySelector(".title");
+        const rect = title.getBoundingClientRect(), bounds = element.getBoundingClientRect();
+        return title.clientHeight >= title.scrollHeight && rect.top >= bounds.top && rect.bottom <= bounds.bottom;
+      });
+      expect(unclippedText).toBe(true);
+      expect(await databaseSnapshot(page)).toEqual(before);
+      expect(await calls(page)).toEqual(requests);
+    });
+  }
+});
+
+test("compact rows retain mouse, touch and keyboard reordering, attendance and full song menus", async ({ page }) => {
+  await loadLibrary(page, { count: 15 });
+  await expectLineupFits(page, 15);
+  await expect(page.locator("#grid")).toHaveAttribute("data-density", "compact");
+  const original = playerIds(15);
+  await startMouseDrag(page, original[0], original[2], ".lineup-attendance");
+  await page.mouse.up();
+  await flushTap(page);
+  const reordered = [original[1], original[2], original[0], ...original.slice(3)];
+  await expectOrder(page, reordered);
+  const { cdp } = await startTouch(page, handle(page, original[14]));
+  try {
+    const bounds = await row(page, reordered[0]).boundingBox();
+    const target = await center(cell(page, reordered[0]));
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: target.x, y: bounds.y + 4, id: 1 }] });
+    await expect(row(page, original[14])).toHaveClass(/lineup-dragging/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } finally { await cdp.detach(); }
+  await flushTap(page);
+  await expectOrder(page, [original[14], ...reordered.slice(0, -1)]);
+  await page.keyboard.press("ArrowDown");
+  await expectOrder(page, [reordered[0], original[14], ...reordered.slice(1, -1)]);
+  await handle(page, original[14]).click();
+  await menu(page).getByRole("button", { name: "Move Up", exact: true }).click();
+  await expect(handle(page, original[14])).toBeFocused();
+  const checkbox = row(page, original[14]).locator(".lineup-present");
+  await checkbox.click();
+  await expect(row(page, original[14])).toHaveClass(/is-absent/);
+  await expect(checkbox).toBeFocused();
+  await expect(row(page, original[14]).locator(".lineup-position")).toHaveText("1");
+  await touchHold(page, cell(page, original[14]));
+  await expect(menu(page).locator(".ctx-lineup-details")).toContainText("Synthetic song 15");
+  await expect(menu(page).getByRole("button", { name: /Copy song/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await cell(page, original[14]).click({ force: true });
+  await flushTap(page);
+  expect(await calls(page)).toEqual([]);
+  await expectLineupFits(page, 15);
+});
+
+test("rotation cancels a compact drag without reordering or triggering its release click", async ({ page }) => {
+  await loadLibrary(page, { count: 15 });
+  await expectLineupFits(page, 15);
+  const before = await databaseSnapshot(page);
+  await startMouseDrag(page);
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await expect.poll(async () => {
+    await lineupDimensions(page);
+    return page.locator(".lineup-dragging").count();
+  }).toBe(0);
+  await expect(page.locator(".lineup-drop-before, .lineup-drop-after")).toHaveCount(0);
+  await page.mouse.up();
+  await flushTap(page);
+  await expectOrder(page, playerIds(15));
+  await expect(menu(page)).toBeHidden();
+  await expect(page.locator(".lineup-present:checked")).toHaveCount(15);
+  expect(await databaseSnapshot(page)).toEqual(before);
+  expect(await calls(page)).toEqual([]);
+});
+
+test("compact no-op, Escape and native touch-cancel gestures never create edits or release actions", async ({ page }) => {
+  await loadLibrary(page, { count: 15 });
+  await expectLineupFits(page, 15);
+  const before = await databaseSnapshot(page);
+  await startMouseDrag(page, ids.firstPlayback, ids.firstPlayback);
+  await page.mouse.up();
+  await flushTap(page);
+  await startMouseDrag(page);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await flushTap(page);
+  const { cdp, point } = await startTouch(page, handle(page, ids.firstPlayback));
+  try {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: point.x, y: point.y + 90, id: 1 }] });
+    await expect(row(page, ids.firstPlayback)).toHaveClass(/lineup-dragging/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+  } finally { await cdp.detach(); }
+  await flushTap(page);
+  await expectOrder(page, playerIds(15));
+  await expect(page.locator(".lineup-dragging, .lineup-drop-before, .lineup-drop-after")).toHaveCount(0);
+  await expect(page.locator(".lineup-present:checked")).toHaveCount(15);
+  await expect(menu(page)).toBeHidden();
+  expect(await databaseSnapshot(page)).toEqual(before);
+  expect(await calls(page)).toEqual([]);
+});
+
+test("compact names, badges and effective cue details remain accessible without obscuring other controls", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 650 });
+  await loadLibrary(page, { count: 15 });
+  const name = "Synthetic player with a long readable name ".repeat(5).trim();
+  page.once("dialog", dialog => dialog.accept(name));
+  await cell(page, ids.firstPlayback).click({ button: "right" });
+  await menu(page).getByRole("button", { name: /Rename song/ }).click();
+  await page.evaluate(uuid => {
+    setPendingStart(uuid, 1250, true);
+    setPendingStop(uuid, 45230, true);
+    setCellPlayedFlag(uuid, true);
+  }, ids.firstPlayback);
+  await cell(page, ids.firstPlayback).click({ button: "right" });
+  page.once("dialog", dialog => dialog.accept("Q"));
+  await menu(page).getByRole("button", { name: /Set hotkey/ }).click();
+  expect(await page.evaluate(uuid => setPlayerPresent(uuid, false), ids.firstPlayback)).toBe(true);
+  await expectLineupFits(page, 15);
+  await expect(cell(page, ids.firstPlayback).locator(".meta")).toBeHidden();
+  await expect(cell(page, ids.firstPlayback).locator(".start")).toBeHidden();
+  await expect(cell(page, ids.firstPlayback)).toHaveClass(/played/);
+  await expect(cell(page, ids.firstPlayback)).toHaveAccessibleName(`${name} Q`);
+  const geometry = await cell(page, ids.firstPlayback).evaluate(element => {
+    const title = element.querySelector(".title");
+    const badge = element.querySelector(".hotkey-badge").getBoundingClientRect();
+    const dot = element.querySelector(".edited-dot").getBoundingClientRect();
+    const rect = title.getBoundingClientRect();
+    return { truncated: title.scrollWidth > title.clientWidth, titleEndsBeforeBadge: rect.right <= badge.left,
+      badgeEndsBeforeDot: badge.right <= dot.left, dotWidth: dot.width };
+  });
+  expect(geometry).toEqual({ truncated: true, titleEndsBeforeBadge: true, badgeEndsBeforeDot: true, dotWidth: 8 });
+  await touchHold(page, cell(page, ids.firstPlayback));
+  await expect(menu(page).locator(".ctx-lineup-title")).toHaveText(name);
+  await expect(menu(page).locator(".ctx-lineup-details")).toContainText("Synthetic track");
+  await expect(menu(page).locator(".ctx-lineup-details")).toContainText("Start: 0:01.25 | End: 0:45.23");
+  await expect(menu(page).getByRole("button", { name: /Copy song/ })).toBeVisible();
+  expect(await calls(page)).toEqual([]);
+});
+
+test("returning to Standard restores its exact grid styling and menu without Lineup sizing effects", async ({ page }) => {
+  await page.setViewportSize({ width: 768, height: 900 });
+  await loadLibrary(page, { count: 15, layout: "standard" });
+  const styles = () => page.evaluate(() => {
+    const grid = document.getElementById("grid");
+    const cell = grid.querySelector(".cell");
+    const g = getComputedStyle(grid), c = getComputedStyle(cell);
+    return { columns: g.gridTemplateColumns, gap: g.gap, padding: g.padding, height: cell.getBoundingClientRect().height,
+      font: c.fontSize, aspectRatio: c.aspectRatio, metaDisplay: getComputedStyle(cell.querySelector(".meta")).display };
+  });
+  const beforeStyles = await styles();
+  const before = await databaseSnapshot(page);
+  await chooseLayout(page, ids.firstGroup, "lineup");
+  await expectLineupFits(page, 15);
+  await chooseLayout(page, ids.firstGroup, "standard");
+  await lineupDimensions(page);
+  expect(await page.locator("#grid").getAttribute("data-density")).toBeNull();
+  expect(await page.locator("#grid").evaluate(element => element.style.getPropertyValue("--lineup-row-height"))).toBe("");
+  expect(await styles()).toEqual(beforeStyles);
+  await cell(page, ids.firstPlayback).click({ button: "right" });
+  await expect(menu(page).locator(".ctx-lineup-details")).toHaveCount(0);
+  expect(await databaseSnapshot(page)).toEqual(before);
+  expect(await calls(page)).toEqual([]);
+});
