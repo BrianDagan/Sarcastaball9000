@@ -859,6 +859,21 @@ body.vol-open #grid { padding-right: 64px; }
 .load-more:disabled { opacity: 0.6; cursor: default; }
 #add-playlist-back { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
 #add-playlist-back .hint { margin: 0; }
+#add-playlist-back { flex-wrap: wrap; }
+.playlist-bulk-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.playlist-bulk-actions button { min-height: 44px; }
+.playlist-bulk-actions button.secondary { margin-top: 0; }
+#add-playlist-status { font-size: 13px; color: var(--text); margin: 8px 0; overflow-wrap: anywhere; }
+#add-playlist-status:empty { margin: 0; }
+#btn-add-playlist-all { background: var(--accent); color: #000; }
+#btn-add-playlist-all:not(:disabled):hover,
+#btn-add-playlist-all:not(:disabled):focus-visible { background: #22cf61; color: #000; }
+#btn-add-playlist-all:not(:disabled):active { background: #189b46; color: #000; }
+#btn-cancel-playlist-add:not(:disabled):hover,
+#btn-cancel-playlist-add:not(:disabled):focus-visible { background: #38383a; color: var(--text); }
+#btn-cancel-playlist-add:not(:disabled):active { background: var(--bg); color: var(--text); }
+#btn-add-playlist-all:disabled,
+#add-playlist-results button:disabled { opacity: 0.6; cursor: default; }
 
 /* Transient bottom banner used for playback errors and device changes. */
 #toast {

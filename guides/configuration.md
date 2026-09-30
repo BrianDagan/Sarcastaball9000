@@ -400,10 +400,45 @@ and [Fullscreen API](https://developer.mozilla.org/en-US/docs/Web/API/Fullscreen
 
 ## Search and playback limits
 
-Local Find searches the loaded library. Add Song searches Spotify or browses the
-user's playlists. Track search requests use the current maximum of 10 items.
+Local Find searches the loaded library. **+** searches Spotify songs/artists or
+browses the user's playlists under **From playlist**; it does not search Spotify
+for playlist names. Track search requests use the current maximum of 10 items.
 The app uses `/playlists/{id}/items`, reads the current `item` field and retains
 a legacy `track` fallback.
+
+### Adding a whole playlist
+
+Open the destination tab, choose **+ -> From playlist**, open a playlist, then
+choose **Add all to this tab**. The app reads every page, not only the tracks
+currently displayed in the preview or those reached using **Load more**.
+It shows progress, checks that the playlist did not change while being read,
+and asks you to confirm the playable-song count and destination before adding.
+
+The batch appends songs in playlist order, leaving existing buttons untouched.
+Repeated songs (including songs already on the tab) become separate buttons,
+with distinct names where needed. Their Sound records may be reused, just as
+when adding songs individually. New buttons start present and unplayed, with
+start-at-zero/full-duration cues and inherited volume/fades. Spotify's playlist itself is not changed;
+this is a one-time addition, not a synchronized playlist link.
+
+**Cancel loading**, Back, Search, or closing the dialog before confirmation
+leaves the library unchanged. Unavailable, local and non-track entries are
+skipped and counted. An empty/unusable playlist creates no buttons. Fetch
+failures or a changed playlist do not leave a partially added batch; retry
+after resolving the reported problem.
+
+Confirmed additions use one database transaction and the normal pre-edit
+backup/recovery path. Use **Save** afterward to export the updated database.
+If recovery fails after insertion, the entire batch remains in memory and the
+message says so: keep that tab open and use Save to retry recovery/export rather
+than adding the playlist again. The bulk button stays disabled for an
+already-added playlist view to prevent accidental duplicate batches; reopening
+the playlist allows another deliberate addition.
+
+Adding songs does not start playback or interrupt the current song/idle silence.
+Individual song addition remains available when a batch is not being processed.
+
+### Spotify access and playback limits
 
 Local files, non-track entries, unusable IDs/durations and explicitly unplayable
 tracks are filtered. A page with no usable tracks can still have another page.

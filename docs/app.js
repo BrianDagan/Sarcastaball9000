@@ -3955,8 +3955,9 @@ function loadPending() {
 function savePending() {
   workingRevision++;
   updateSaveBadge();
-  if (db && !erasingBrowser) void persistDbToIdb();
+  const recovery = db && !erasingBrowser ? persistDbToIdb() : Promise.resolve(false);
   if (nowPlaying) refreshPlayingSnapshot();
+  return recovery;
 }
 function pendingCount() {
   return Object.keys(pending.colors).length + pending.deletes.length + Object.keys(pending.moves).length + Object.keys(pending.starts).length + Object.keys(pending.stops).length + Object.keys(pending.volumes).length + Object.keys(pending.hotkeys).length + (pending.tabOps || 0);
@@ -4529,7 +4530,7 @@ async function persistDbToIdb() {
 
 function markTabOpDirty() {
   pending.tabOps = (pending.tabOps || 0) + 1;
-  savePending();
+  return savePending();
 }
 
 function newUuid() {
@@ -4761,6 +4762,7 @@ const dialogReturnFocus = new Map();
 function setDialogOpen(id, open) {
   const dialog = document.getElementById(id);
   if (!dialog || (!open && dialog.classList.contains("hidden"))) return;
+  if ((id === "add-song-modal" && !open) || (id !== "add-song-modal" && open)) cancelPlaylistBulk();
   if (open) {
     cancelLineupDrag();
     dialogReturnFocus.set(id, document.activeElement);
@@ -5126,6 +5128,7 @@ let addPlaylistSeq = 0;
 let addSearchState = { term: "", offset: 0, total: null, loading: false };
 let playlistsState = { offset: 0, total: null, loading: false };
 let plTracksState  = { id: null, name: "", offset: 0, total: null, loading: false };
+let playlistBulkOperation = null;
 
 const ADD_SEARCH_PAGE = 10;
 const ADD_PLAYLIST_PAGE = 50;
@@ -5150,12 +5153,14 @@ function closeAddSong() {
   setDialogOpen("add-song-modal", false);
 }
 function invalidateSearchWork() {
+  cancelPlaylistBulk();
   addSearchSeq++;
   addPlaylistSeq++;
   clearTimeout(addSearchTimer);
   addSearchState = { term: "", offset: 0, total: null, loading: false };
   playlistsState = { offset: 0, total: null, loading: false };
   plTracksState = { id: null, name: "", offset: 0, total: null, loading: false };
+  updatePlaylistBulkControls();
 }
 function setAddMode(mode) {
   invalidateSearchWork();
@@ -5175,12 +5180,13 @@ function setAddMode(mode) {
   }
 }
 
-async function addSongApi(path) {
+async function addSongApi(path, requestCurrent = null) {
   const generation = authGeneration;
   for (let attempt = 0; ; attempt++) {
     assertAuthGeneration(generation);
+    if (requestCurrent && !requestCurrent()) throw new Error("The playlist request was canceled.");
     try {
-      return await api(path);
+      return await api(path, {}, requestCurrent);
     } catch (e) {
       assertAuthGeneration(generation);
       if (e.status === 429 && e.reason !== "QUOTA_EXCEEDED" && attempt < 2 && e.retryAfterMs !== null && e.retryAfterMs <= 30_000) {
@@ -5199,8 +5205,8 @@ async function addSongApi(path) {
 
 // The authorized user's market takes precedence; do not retry unrelated errors
 // with different query parameters.
-async function addSongApiMarket(path) {
-  return addSongApi(path);
+async function addSongApiMarket(path, requestCurrent = null) {
+  return addSongApi(path, requestCurrent);
 }
 
 // A track is usable only if it's a real, non-local, identifiable, playable
@@ -5245,6 +5251,7 @@ function appendTrackRow(container, track) {
   row.appendChild(main);
   row.appendChild(sub);
   row.onclick = () => addTileForTrack(track);
+  if (container.id === "add-playlist-results") row.disabled = !!playlistBulkOperation;
   container.appendChild(row);
 }
 
@@ -5314,10 +5321,12 @@ async function runAddSearch(reset) {
 
 // --- Playlist mode ---
 function showPlaylistList() {
+  cancelPlaylistBulk();
   addPlaylistSeq++;
   playlistsState = { offset: 0, total: null, loading: false };
   document.getElementById("add-playlist-back").classList.add("hidden");
   plTracksState = { id: null, name: "", offset: 0, total: null, loading: false };
+  updatePlaylistBulkControls();
 }
 async function loadPlaylists(reset) {
   const list = document.getElementById("add-playlist-results");
@@ -5371,17 +5380,19 @@ async function loadPlaylists(reset) {
   }
 }
 function openPlaylist(id, name) {
+  cancelPlaylistBulk();
   addPlaylistSeq++;
   document.getElementById("add-playlist-back").classList.remove("hidden");
   document.getElementById("add-playlist-name").textContent = name;
   plTracksState = { id, name, offset: 0, total: null, loading: false };
   document.getElementById("add-playlist-results").innerHTML = "<div class='hint'>Loading tracks…</div>";
+  updatePlaylistBulkControls();
   loadPlaylistTracks(true);
 }
 async function loadPlaylistTracks(reset) {
   const list = document.getElementById("add-playlist-results");
   const st = plTracksState;
-  if (st.loading || !st.id) return;
+  if (st.loading || !st.id || playlistBulkOperation) return;
   st.loading = true;
   const seq = ++addPlaylistSeq;
   try {
@@ -5409,6 +5420,160 @@ async function loadPlaylistTracks(reset) {
     list.appendChild(err);
   } finally {
     st.loading = false;
+    updatePlaylistBulkControls();
+  }
+}
+
+function updatePlaylistBulkControls() {
+  const bulk = document.getElementById("add-playlist-bulk");
+  const add = document.getElementById("btn-add-playlist-all");
+  const cancel = document.getElementById("btn-cancel-playlist-add");
+  const busy = !!playlistBulkOperation;
+  const cancelFocused = document.activeElement === cancel;
+  bulk.classList.toggle("hidden", !plTracksState.id);
+  add.disabled = busy || !!plTracksState.bulkAdded;
+  cancel.classList.toggle("hidden", !busy || playlistBulkOperation.phase !== "loading");
+  const list = document.getElementById("add-playlist-results");
+  list.setAttribute("aria-busy", String(busy));
+  list.querySelectorAll("button").forEach(button => { button.disabled = busy; });
+  if (cancelFocused && cancel.classList.contains("hidden")) {
+    (add.disabled ? document.getElementById("btn-playlist-back") : add).focus({ preventScroll: true });
+  }
+}
+
+function playlistBulkMessage(message) {
+  document.getElementById("add-playlist-status").textContent = message;
+}
+
+function cancelPlaylistBulk(showMessage = false) {
+  if (showMessage && playlistBulkOperation?.phase !== "loading") return;
+  playlistBulkOperation = null;
+  playlistBulkMessage(showMessage ? "Canceled. No songs were added." : "");
+  updatePlaylistBulkControls();
+}
+
+async function readWholePlaylist(id, current) {
+  const path = `/playlists/${encodeURIComponent(id)}`;
+  const version = async () => {
+    const response = await addSongApi(`${path}?fields=snapshot_id`, current);
+    if (!current()) throw new Error("The playlist request was canceled.");
+    if (typeof response?.snapshot_id !== "string" || !response.snapshot_id) {
+      throw new Error("Spotify did not return a playlist version. Try loading the playlist again.");
+    }
+    return response.snapshot_id;
+  };
+  const initialVersion = await version();
+  const tracks = [];
+  let offset = 0, total = null, skipped = 0;
+  // Fetch from zero rather than relying on the paged preview or its browse cap.
+  do {
+    const page = await addSongApiMarket(`${path}/items?limit=${ADD_TRACKS_PAGE}&offset=${offset}`, current);
+    if (!current()) throw new Error("The playlist request was canceled.");
+    if (!Array.isArray(page?.items) || !Number.isSafeInteger(page.total) || page.total < 0 ||
+        page.offset !== offset || page.items.length > ADD_TRACKS_PAGE ||
+        (total !== null && page.total !== total)) {
+      throw new Error("Spotify returned an incomplete or changing playlist. Try loading it again.");
+    }
+    total = page.total;
+    if (offset + page.items.length > total || (!page.items.length && offset < total)) {
+      throw new Error("Spotify did not return the complete playlist. Try loading it again.");
+    }
+    for (const entry of page.items) {
+      const track = entry?.item || entry?.track;
+      if (entry?.is_local !== true && isUsableTrack(track)) tracks.push(track);
+      else skipped++;
+    }
+    offset += page.items.length;
+    playlistBulkMessage(`Read ${offset} of ${total} playlist entries; ${tracks.length} playable songs.`);
+  } while (offset < total);
+  if (await version() !== initialVersion) {
+    throw new Error("The playlist changed while loading. Try again to add one consistent version.");
+  }
+  return { tracks, skipped };
+}
+
+async function addAllPlaylistTracks() {
+  if (playlistBulkOperation || plTracksState.bulkAdded) return false;
+  const source = plTracksState;
+  const groupUUID = groups[activeTabIdx]?.uuid;
+  if (!db || !source.id || !groupUUID || databaseImporting || saveInProgress || browserCleanupActive()) {
+    playlistBulkMessage("Open a playlist and wait for any save, import or cleanup to finish before adding songs.");
+    return false;
+  }
+  const identity = databaseIdentity, epoch = databaseEpoch, sequence = importSequence;
+  const generation = authGeneration;
+  let savedAuth;
+  const operation = { phase: "loading" };
+  const sameView = () => playlistBulkOperation === operation && plTracksState === source &&
+    addSongMode === "playlist" && !document.getElementById("add-song-modal").classList.contains("hidden");
+  const current = () => {
+    if (!sameView() || databaseIdentity !== identity || databaseEpoch !== epoch ||
+        importSequence !== sequence || databaseImporting || browserCleanupActive() ||
+        authGeneration !== generation || groups[activeTabIdx]?.uuid !== groupUUID) return false;
+    try { return localStorage.getItem(LS_AUTH) === (accessTokenAuth || savedAuth); }
+    catch {
+      operation.cancelReason = "Browser storage could not be read. Check storage permissions before trying again.";
+      return false;
+    }
+  };
+  playlistBulkOperation = operation;
+  playlistBulkMessage("Reading the whole playlist. Nothing has been added yet.");
+  const addFocused = document.activeElement === document.getElementById("btn-add-playlist-all");
+  updatePlaylistBulkControls();
+  if (addFocused) document.getElementById("btn-cancel-playlist-add").focus({ preventScroll: true });
+  let added = 0;
+  try {
+    savedAuth = authStorage(() => localStorage.getItem(LS_AUTH));
+    const { tracks, skipped } = await readWholePlaylist(source.id, current);
+    if (!current()) return false;
+    if (!tracks.length) {
+      playlistBulkMessage(`No playable songs found; ${skipped} entries skipped. Nothing was added.`);
+      return false;
+    }
+    const group = groups.find(item => item.uuid === groupUUID);
+    const songs = `${tracks.length} ${tracks.length === 1 ? "song" : "songs"}`;
+    const skipMessage = skipped ? `\n${skipped} unavailable, local or non-track entries will be skipped.` : "";
+    if (!confirm(`Add ${songs} from "${source.name}" to "${group.name}"?${skipMessage}\n\nExisting buttons will stay unchanged. Repeated songs will become separate buttons. Use Save afterward to export the updated database.`)) {
+      playlistBulkMessage("Canceled. No songs were added.");
+      return false;
+    }
+    if (!current()) return false;
+    if (saveInProgress) throw new Error("A save is in progress. Wait for it to finish, then try again.");
+    if (!mutateDatabase(() => insertTrackButtons(tracks, groupUUID))) {
+      playlistBulkMessage("No songs were added. The database change did not complete; your previous data is retained.");
+      return false;
+    }
+    added = tracks.length;
+    source.bulkAdded = true;
+    operation.phase = "saving";
+    playlistBulkMessage(`Added ${songs}. Saving browser recovery...`);
+    updatePlaylistBulkControls();
+    const recovery = markTabOpDirty();
+    renderGrid();
+    restorePlayingHighlight();
+    const saved = await recovery;
+    if (!sameView() || databaseIdentity !== identity || databaseEpoch !== epoch) return saved;
+    const result = `${songs} added to "${group.name}"${skipped ? `; ${skipped} entries skipped` : ""}.`;
+    playlistBulkMessage(saved ? `${result} Use Save to export the updated database.` :
+      `${result} Browser recovery could not be saved. Keep this tab open and use Save to retry; do not add the playlist again.`);
+    return saved;
+  } catch (error) {
+    if (sameView()) {
+      playlistBulkMessage(added
+        ? "Songs were added, but the operation did not finish. Keep this tab open and use Save; do not add the playlist again."
+        : `No songs were added. ${error.message}`);
+    }
+    return false;
+  } finally {
+    if (sameView() && !current() && !added) {
+      playlistBulkMessage(operation.cancelReason
+        ? `No songs were added. ${operation.cancelReason}`
+        : "The tab, library or sign-in changed. No songs were added; reopen the playlist to try again.");
+    }
+    if (playlistBulkOperation === operation) {
+      playlistBulkOperation = null;
+      updatePlaylistBulkControls();
+    }
   }
 }
 
@@ -5433,10 +5598,40 @@ function resolveSoundUUID(track) {
      (track.album && track.album.name) || "", (track.duration_ms || 0) / 1000,
      "public.audio", "file:///", 0, "", track.id, "",
      now, now, "0"]);
+  if (db.getRowsModified() !== 1) throw new Error("The database did not accept the song.");
   return uuid;
 }
 
+function insertTrackButtons(tracks, groupUUID) {
+  if (!queryAll("SELECT 1 FROM PlaybackGroup WHERE playbackGroupUUIDRaw=?", [groupUUID]).length) {
+    throw new Error("The destination tab no longer exists.");
+  }
+  const taken = groupTileNames(groupUUID, null);
+  const maxRow = queryAll("SELECT COALESCE(MAX(orderIndex), -1) AS m FROM Playback WHERE playbackGroupUUIDRaw=?", [groupUUID]);
+  const firstOrder = (maxRow[0]?.m ?? -1) + 1;
+  const now = Date.now() / 1000;
+  return tracks.map((track, index) => {
+    if (!isUsableTrack(track)) throw new Error("A selected song is no longer usable.");
+    const name = uniqueTileName((track.name || "").trim().slice(0, 200) || "(untitled)", taken);
+    taken.add(name);
+    const soundUUID = resolveSoundUUID(track);
+    const stopSecs = Math.floor(track.duration_ms / 1000);
+    db.run(`INSERT INTO Playback
+      (playbackUUIDRaw, playbackGroupUUIDRaw, sourceUUIDRaw, orderIndex, displayTitle, altTitle,
+       volume, loopCount, willPlayOverRaw, willPlayNextSoundRaw, startAtSeconds, startAtSubSec,
+       stopAtSeconds, stopAtSubSec, fadeInSeconds, fadeOutSeconds, hasBeenPlayedRaw, songCellColorRaw,
+       hotKey, createdTimestamp1970, updatedTimestamp1970)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [newUuid(), groupUUID, soundUUID, firstOrder + index, name, "",
+       -1, 0, 0, 0, 0, 0, stopSecs, (track.duration_ms - stopSecs * 1000) / 1000, -1, -1, 0, -1,
+       "", now, now]);
+    if (db.getRowsModified() !== 1) throw new Error("The database did not accept a song button.");
+    return name;
+  });
+}
+
 function addTileForTrack(track) {
+  if (playlistBulkOperation) { showToast("Wait for the playlist batch or cancel its loading first."); return; }
   if (!db) return;
   if (!isUsableTrack(track)) {
     alert("That track can't be added (it may be a local file or unavailable in your region).");
@@ -5444,28 +5639,8 @@ function addTileForTrack(track) {
   }
   const g = groups[activeTabIdx];
   if (!g) { alert("Create or open a tab first."); return; }
-  let name = (track.name || "").trim().slice(0, 200) || "(untitled)";
-  name = uniqueTileName(name, groupTileNames(g.uuid, null));
-  const maxRow = queryAll("SELECT COALESCE(MAX(orderIndex), -1) AS m FROM Playback WHERE playbackGroupUUIDRaw = ?", [g.uuid]);
-  const newOrder = (maxRow[0]?.m ?? -1) + 1;
-  const now = Date.now() / 1000;
-  // Preserve the fractional duration across the schema's seconds/subseconds.
-  const stopSecs = Math.floor((track.duration_ms || 0) / 1000);
-  // Both inserts happen together: if the Playback insert fails we don't want a
-  // stranded Sound row, so wrap them in a transaction.
-  if (!mutateDatabase(() => {
-    const soundUUID = resolveSoundUUID(track);
-    db.run(`INSERT INTO Playback
-      (playbackUUIDRaw, playbackGroupUUIDRaw, sourceUUIDRaw, orderIndex, displayTitle, altTitle,
-       volume, loopCount, willPlayOverRaw, willPlayNextSoundRaw, startAtSeconds, startAtSubSec,
-       stopAtSeconds, stopAtSubSec, fadeInSeconds, fadeOutSeconds, hasBeenPlayedRaw, songCellColorRaw,
-       hotKey, createdTimestamp1970, updatedTimestamp1970)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [newUuid(), g.uuid, soundUUID, newOrder, name, "",
-       -1, 0, 0, 0, 0, 0,
-       stopSecs, (track.duration_ms - stopSecs * 1000) / 1000, -1, -1, 0, -1,
-       "", now, now]);
-  })) return;
+  let name;
+  if (!mutateDatabase(() => { [name] = insertTrackButtons([track], g.uuid); })) return;
   markTabOpDirty();
   renderGrid();
   restorePlayingHighlight();
@@ -6081,6 +6256,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Add song (➕) wiring
   document.getElementById("btn-add-song").onclick = () => openAddSong();
   document.getElementById("btn-close-add-song").onclick = () => closeAddSong();
+  document.getElementById("btn-add-playlist-all").onclick = () => { void addAllPlaylistTracks(); };
+  document.getElementById("btn-cancel-playlist-add").onclick = () => cancelPlaylistBulk(true);
   document.getElementById("add-mode-search").onclick = () => setAddMode("search");
   document.getElementById("add-mode-playlist").onclick = () => setAddMode("playlist");
   document.getElementById("btn-playlist-back").onclick = () => { showPlaylistList(); loadPlaylists(true); };
