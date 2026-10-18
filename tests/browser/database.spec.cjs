@@ -109,6 +109,71 @@ test("repeated tile toggles survive state refreshes and text acknowledgements", 
   }
 });
 
+test("native-client playback uses album context and tolerates one stale null snapshot", async ({ page }) => {
+  await loadFixture(page);
+  const playBodies = [];
+  let staleReads = 1;
+  let state = null;
+  await page.route("https://api.spotify.com/v1/tracks/synthetic-track-0**", route => route.fulfill({ json: {
+    id: "synthetic-relinked-track",
+    uri: "spotify:track:synthetic-relinked-track",
+    duration_ms: 123456,
+    is_playable: true,
+    album: { uri: "spotify:album:synthetic-album" },
+  } }));
+  await page.route("https://api.spotify.com/v1/me/player**", route => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/v1/me/player") {
+      if (staleReads-- > 0) return route.fulfill({ status: 204 });
+      return route.fulfill({ json: state });
+    }
+    if (request.method() === "PUT" && path.endsWith("/play")) {
+      const body = request.postDataJSON();
+      playBodies.push(body);
+      if (body.context_uri) {
+        state = {
+          is_playing: true, progress_ms: body.position_ms,
+          item: { id: "synthetic-relinked-track" },
+          device: { id: "synthetic-device", type: "Computer", supports_volume: false },
+          actions: { disallows: {} },
+        };
+      }
+      return route.fulfill({ status: 204 });
+    }
+    return route.fulfill({ status: 204 });
+  });
+  await page.evaluate(() => {
+    getAccessToken = async () => "synthetic-access";
+    activeDeviceId = "synthetic-device";
+    activeDeviceCapabilities = { id: "synthetic-device", type: "Computer", supports_volume: false };
+    trackPlayedOn = false;
+  });
+
+  const tile = page.locator("#grid .cell").first();
+  await tile.click();
+  await expect(tile).toHaveClass(/playing/);
+  await page.evaluate(() => transportQueue);
+  expect(playBodies).toEqual([{
+    context_uri: "spotify:album:synthetic-album",
+    offset: { uri: "spotify:track:synthetic-relinked-track" },
+    position_ms: 0,
+  }]);
+  expect(await page.evaluate(() => reconcilePlayback())).toBe(true);
+  await expect(tile).toHaveClass(/playing/);
+  expect(await page.evaluate(() => reconcilePlayback())).toBe(true);
+  expect(await page.evaluate(() => ({
+    uuid: nowPlaying?.uuid,
+    spotifyTrackId: playingSnapshot?.spotifyTrackId,
+    deadline: transportStopDeadlineMs(),
+  }))).toEqual({
+    uuid: ids.firstPlayback,
+    spotifyTrackId: "synthetic-relinked-track",
+    deadline: 123456,
+  });
+  await expect(page.locator("#transport-status")).toBeHidden();
+});
+
 test("export-before-erase preserves work until acknowledgement and clears peer tabs", async ({ page, context }) => {
   const SQL = await loadFixture(page);
   await page.evaluate(id => setCellColor(id, 2), ids.firstPlayback);

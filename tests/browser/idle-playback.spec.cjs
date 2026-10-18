@@ -103,8 +103,16 @@ async function prepare(page, options = {}) {
           ...(backend.playable ? {} : { restrictions: { reason: "market" } }),
         } });
       }
+      if (method === "GET" && url.pathname.startsWith("/v1/tracks/")) {
+        const id = url.pathname.split("/").at(-1);
+        return route.fulfill({ json: {
+          ...track(id),
+          album: { name: "Synthetic album", images: [], uri: "spotify:album:synthetic-album" },
+        } });
+      }
       if (method === "PUT" && url.pathname === "/v1/me/player/play") {
-        const id = call.body?.uris?.[0]?.replace("spotify:track:", "") || backend.state.item?.id;
+        const uri = call.body?.uris?.[0] || call.body?.offset?.uri;
+        const id = uri?.replace("spotify:track:", "") || backend.state.item?.id;
         if (id === SILENCE_ID && backend.failSilence) {
           return route.fulfill({ status: 503, json: { error: { status: 503, message: "Synthetic failure" } } });
         }
@@ -167,7 +175,7 @@ async function prepare(page, options = {}) {
 
 function plays(backend, uri = SILENCE_URI) {
   return backend.calls.filter(call => call.method === "PUT" && call.path === "/v1/me/player/play" &&
-    call.body?.uris?.includes(uri));
+    (call.body?.uris?.includes(uri) || call.body?.offset?.uri === uri));
 }
 
 function commands(backend, path) {

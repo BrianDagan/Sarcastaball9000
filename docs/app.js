@@ -96,6 +96,7 @@ let accessToken = null;
 let accessTokenExpiresAt = 0;
 let activeDeviceId = null;
 let activeDeviceCapabilities = null;
+const trackPlaybackContexts = new Map();
 let appSettings = null;
 // Global "Track Played" switch. When on, starting a song marks it as played
 // (which grays the tile out). Loaded from localStorage at boot; defaults to on.
@@ -1785,6 +1786,7 @@ function invalidateAuthWork() {
   accessToken = null;
   accessTokenExpiresAt = 0;
   accessTokenAuth = null;
+  trackPlaybackContexts.clear();
 }
 
 function assertAuthGeneration(generation) {
@@ -2218,8 +2220,13 @@ let stopDeadlineTimer = null;
 let manualStopTimer = null;
 let stopDeadlineKey = null;
 let reconcileTimer = null;
+let playbackExpectation = null;
+let playbackMismatch = null;
 let volumeSequence = 0;
 let volumeFineThrottle = null;
+const PLAYBACK_STABILIZE_MS = 4000;
+const PLAYBACK_MISMATCH_CONFIRMATIONS = 2;
+const PLAYBACK_MISMATCH_MIN_INTERVAL_MS = 1000;
 const IDLE_SILENCE_TRACK = "3mkOlbSv5RYadx0JsjTrKq";
 const IDLE_CHECK_MS = 30000;
 const IDLE_PLAYBACK_CHECK_MS = 15000;
@@ -2553,9 +2560,111 @@ function reportTransportFailure(action, error, retry) {
   status.classList.remove("hidden");
 }
 
+function resetPlaybackConfirmation() {
+  playbackExpectation = null;
+  playbackMismatch = null;
+}
+
+function spotifyUri(value, type) {
+  return typeof value === "string" && value.startsWith(`spotify:${type}:`) ? value : null;
+}
+
+async function resolveTrackPlaybackContext(trackId, current) {
+  const cached = trackPlaybackContexts.get(trackId);
+  if (cached) return cached;
+  try {
+    const track = await api(`/tracks/${encodeURIComponent(trackId)}?market=from_token`, {}, current);
+    if (!current()) return null;
+    if (!track || track.is_playable === false) {
+      throw new Error("Spotify did not return playable metadata for the requested track.");
+    }
+    const returnedTrackUri = spotifyUri(track.uri, "track");
+    const resolvedTrackId = typeof track.id === "string" && track.id
+      ? track.id
+      : returnedTrackUri?.split(":").at(-1) || trackId;
+    const trackUri = returnedTrackUri || `spotify:track:${resolvedTrackId}`;
+    const context = {
+      requestedTrackId: trackId,
+      resolvedTrackId,
+      trackUri,
+      albumUri: spotifyUri(track.album?.uri, "album"),
+      durationMs: Number.isFinite(track.duration_ms) && track.duration_ms > 0 ? track.duration_ms : null,
+    };
+    trackPlaybackContexts.set(trackId, context);
+    if (resolvedTrackId !== trackId) trackPlaybackContexts.set(resolvedTrackId, context);
+    return context;
+  } catch (error) {
+    if (!current()) return null;
+    console.warn("Spotify album-context lookup failed; trying direct track playback.", error?.message || error);
+    return {
+      requestedTrackId: trackId,
+      resolvedTrackId: trackId,
+      trackUri: `spotify:track:${trackId}`,
+      albumUri: null,
+      durationMs: null,
+    };
+  }
+}
+
+async function buildTrackPlayRequest(trackId, positionMs, current) {
+  const context = await resolveTrackPlaybackContext(trackId, current);
+  if (!context || !current()) return null;
+  const body = context.albumUri
+    ? { context_uri: context.albumUri, offset: { uri: context.trackUri }, position_ms: positionMs }
+    : { uris: [context.trackUri], position_ms: positionMs };
+  return { ...context, body, usesContext: !!context.albumUri };
+}
+
+function rememberPlaybackExpectation(request, deviceId, issuedAt) {
+  playbackExpectation = {
+    generation: transportGeneration,
+    deviceId,
+    issuedAt,
+    graceUntil: performance.now() + PLAYBACK_STABILIZE_MS,
+    trackIds: Array.from(new Set([request.requestedTrackId, request.resolvedTrackId].filter(Boolean))),
+  };
+  playbackMismatch = null;
+}
+
+function playbackStateMatches(state) {
+  if (!state?.item || !playingSnapshot) return false;
+  const expected = new Set([
+    playingSnapshot.trackid,
+    playingSnapshot.spotifyTrackId,
+    ...(playbackExpectation?.generation === transportGeneration ? playbackExpectation.trackIds : []),
+  ].filter(Boolean));
+  return [state.item.id, state.item.linked_from?.id].some(id => expected.has(id));
+}
+
+function deferPlaybackMismatch(state) {
+  const now = performance.now();
+  const expectation = playbackExpectation?.generation === transportGeneration ? playbackExpectation : null;
+  const timestamp = Number(state?.timestamp);
+  const stale = expectation && Number.isFinite(timestamp) && timestamp < expectation.issuedAt - 1000;
+  if (expectation && (now < expectation.graceUntil ||
+      (stale && now < expectation.graceUntil + PLAYBACK_STABILIZE_MS))) return true;
+
+  const key = [
+    state ? "state" : "none",
+    state?.device?.id || "",
+    state?.item?.id || "",
+    state?.item?.linked_from?.id || "",
+    String(state?.is_playing),
+  ].join(":");
+  if (!playbackMismatch || playbackMismatch.key !== key) {
+    playbackMismatch = { key, count: 1, observedAt: now };
+    return true;
+  }
+  if (now - playbackMismatch.observedAt < PLAYBACK_MISMATCH_MIN_INTERVAL_MS) return true;
+  playbackMismatch.count++;
+  playbackMismatch.observedAt = now;
+  return playbackMismatch.count < PLAYBACK_MISMATCH_CONFIRMATIONS;
+}
+
 function queueTransport(action, operation, retry, intent = true) {
   const generation = intent ? ++transportGeneration : transportGeneration;
   if (intent) {
+    resetPlaybackConfirmation();
     transportPending = true;
     transportIntentKind = action;
     cancelFade();
@@ -2591,6 +2700,7 @@ function queueTransport(action, operation, retry, intent = true) {
 }
 
 function invalidateTransportWork() {
+  resetPlaybackConfirmation();
   clearIdlePlayback(true);
   idleTrack = null;
   idleBlocked = true;
@@ -2616,13 +2726,22 @@ function invalidateTransportWork() {
   document.getElementById("transport-status").classList.add("hidden");
 }
 
+function transportStopDeadlineMs() {
+  if (!progress || !nowPlaying) return 0;
+  const cueStop = effectiveStopMs(nowPlaying.uuid);
+  if (cueStop > 0 && cueStop < progress.durationMs) return cueStop;
+  if (!playingSnapshot?.contextPlayback) return 0;
+  const contextDuration = Number(playingSnapshot.contextDurationMs);
+  return contextDuration > 0 ? contextDuration : progress.durationMs;
+}
+
 function armStopDeadline() {
   if (!progress || progress.paused || !nowPlaying || progress.stopAttempted || erasingBrowser) {
     clearTimeout(stopDeadlineTimer); stopDeadlineTimer = null; stopDeadlineKey = null;
     return;
   }
-  const stop = effectiveStopMs(nowPlaying.uuid);
-  if (!(stop > 0 && stop < progress.durationMs)) {
+  const stop = transportStopDeadlineMs();
+  if (!(stop > 0)) {
     clearTimeout(stopDeadlineTimer); stopDeadlineTimer = null; stopDeadlineKey = null;
     return;
   }
@@ -2663,16 +2782,26 @@ async function reconcilePlayback() {
           ? state.item.duration_ms : idleTrack?.durationMs;
         recordIdlePlayback(state.device.id, duration, state.progress_ms, requestedAt);
       }
+      resetPlaybackConfirmation();
       updateIdleControls();
       scheduleIdleCheck(state.is_playing ? IDLE_PLAYBACK_CHECK_MS : 1000);
       return true;
     }
-    if (!state || state.item?.id !== playingSnapshot?.trackid) {
+    if (!playbackStateMatches(state)) {
+      if (deferPlaybackMismatch(state)) return true;
+      const missingPlayback = !state?.item;
       cancelFade();
       invalidateTransportWork();
-      showToast("Spotify playback changed outside this controller. Select a tile to resume cue control.");
+      if (missingPlayback) {
+        reportTransportFailure("Playback", new Error(
+          "Spotify acknowledged the command but did not report the requested track on the selected device. Retry the tile or choose another Spotify device.",
+        ));
+      } else {
+        showToast("Spotify consistently reported a different track. Sarcastaball stopped cue control; select a tile to take it back.");
+      }
       return true;
     }
+    resetPlaybackConfirmation();
     activeDeviceCapabilities = state.device || activeDeviceCapabilities;
     if (state.device?.id) activeDeviceId = state.device.id;
     updateVolumeControls();
@@ -2789,7 +2918,6 @@ async function startPlayback(cell) {
   const startMs = parseInt(cell.dataset.startms || "0", 10);
   const fadeInSec = parseInt(cell.dataset.fadein || "-1", 10);
   const effFadeIn = (fadeInSec >= 0) ? fadeInSec : getDefaultFadeInSec();
-  const body = { uris: [`spotify:track:${trackId}`], position_ms: startMs };
   // Per-track volume: a stored value of 0..1 wins; the -1 sentinel (or anything
   // negative/missing) means "use the Settings default".
   const rawVol = parseFloat(cell.dataset.volume);
@@ -2804,19 +2932,27 @@ async function startPlayback(cell) {
     if (!permitted()) return;
     const dev = await ensureDevice();
     if (!permitted()) return;
+    const playbackRequest = await buildTrackPlayRequest(trackId, startMs, permitted);
+    if (!playbackRequest || !permitted()) return;
     const canVolume = canControlVolume();
     if (canVolume) await sendVolume(effFadeIn > 0 ? 0 : targetVol, permitted);
     if (!permitted()) return;
     const t0 = performance.now();
+    const issuedAt = Date.now();
     try {
       await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
-        method: "PUT", body: JSON.stringify(body),
+        method: "PUT", body: JSON.stringify(playbackRequest.body),
       }, permitted);
     } catch (error) { setLatency(performance.now() - t0, false); throw error; }
     if (!current()) return;
     setLatency(performance.now() - t0);
     clearIdlePlayback(true);
-    setNowPlaying(snapshot);
+    setNowPlaying(snapshot, {
+      spotifyTrackId: playbackRequest.resolvedTrackId,
+      contextPlayback: playbackRequest.usesContext,
+      contextDurationMs: playbackRequest.usesContext ? playbackRequest.durationMs : null,
+    });
+    rememberPlaybackExpectation(playbackRequest, dev, issuedAt);
     document.querySelectorAll(".cell").forEach(tile => {
       if (tile.dataset.pbuuid === snapshot.dataset.pbuuid) tile.classList.add("playing");
     });
@@ -2932,16 +3068,28 @@ async function resumePlayback() {
       await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid), permitted);
     }
     if (!permitted()) return;
-    const restore = idleResume?.uuid === nowPlaying.uuid ? {
-      uris: [`spotify:track:${idleResume.trackId}`],
-      position_ms: Math.max(0, Math.min(progress?.durationMs || Infinity, Math.round(currentPositionMs()))),
-    } : null;
+    const restorePosition = Math.max(0, Math.min(progress?.durationMs || Infinity, Math.round(currentPositionMs())));
+    const restore = idleResume?.uuid === nowPlaying.uuid
+      ? await buildTrackPlayRequest(idleResume.trackId, restorePosition, permitted)
+      : null;
+    if (idleResume?.uuid === nowPlaying.uuid && (!restore || !permitted())) return;
+    const issuedAt = Date.now();
     await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
-      method: "PUT", ...(restore ? { body: JSON.stringify(restore) } : {}),
+      method: "PUT", ...(restore ? { body: JSON.stringify(restore.body) } : {}),
     }, permitted);
     if (!current() || !nowPlaying) return;
+    if (restore && playingSnapshot) {
+      playingSnapshot.spotifyTrackId = restore.resolvedTrackId;
+      playingSnapshot.contextPlayback = restore.usesContext;
+      playingSnapshot.contextDurationMs = restore.usesContext ? restore.durationMs : null;
+    }
     clearIdlePlayback(true);
     setPlaybackPaused(false);
+    rememberPlaybackExpectation(restore || {
+      requestedTrackId: playingSnapshot.trackid,
+      resolvedTrackId: playingSnapshot.spotifyTrackId,
+    }, dev, issuedAt);
+    armStopDeadline();
   }, resumePlayback);
 }
 
@@ -3052,9 +3200,10 @@ function doFade(fromPct, toPct, durationMs, onDone) {
   return true;
 }
 
-function setNowPlaying(cell) {
+function setNowPlaying(cell, playback = null) {
   // The playing track is about to change. Invalidate any in-flight fine-cue
   // action (so it can't seek the wrong track) and put away a stale slider.
+  resetPlaybackConfirmation();
   cueFineGen++;
   hideCueFine();
   document.querySelectorAll(".cell.playing").forEach(c => {
@@ -3077,7 +3226,7 @@ function setNowPlaying(cell) {
     return;
   }
   cell.classList.add("playing");
-  playingSnapshot = { ...cell.dataset };
+  playingSnapshot = { ...cell.dataset, ...(playback || {}) };
   nowPlaying = { uuid: cell.dataset.pbuuid, paused: false };
   refreshPlayingSnapshot();
   document.getElementById("np-title").textContent = cell.querySelector(".title").textContent;
@@ -3090,6 +3239,12 @@ function setNowPlaying(cell) {
   updateSwatchActive();
   updateDeleteButtons();
   startProgress(cell);
+  if (Number.isFinite(playback?.contextDurationMs) && playback.contextDurationMs > 0) {
+    progress.durationMs = playback.contextDurationMs;
+    document.getElementById("np-time-end").textContent = fmtTime(progress.durationMs / 1000);
+    armStopDeadline();
+    renderProgress();
+  }
   scheduleReconciliation();
 }
 

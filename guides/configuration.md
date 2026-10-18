@@ -445,6 +445,21 @@ tracks are filtered. A page with no usable tracks can still have another page.
 Seeing playlist metadata does not guarantee access to its contents; Development
 Mode can restrict contents to owned/collaborated playlists.
 
+Sarcastaball resolves a library track's current Spotify metadata before starting
+it and, when Spotify supplies an album URI, starts that album at the requested
+track and cue position. This works around a native Spotify-client regression
+where a bare single-track play request can return success while leaving playback
+empty. The resolved track ID is also accepted during playback reconciliation, so
+Spotify catalog relinking is not mistaken for another controller.
+
+Album-context playback could otherwise continue into the next album track.
+Sarcastaball therefore keeps the existing earlier end cue when present and adds
+a mandatory pause at the requested track's reported full duration when no
+earlier cue exists. This remains browser- and network-timed rather than
+sample-accurate. If track metadata cannot be loaded, the app falls back to the
+older direct-track request and reports a sustained unconfirmed start rather than
+claiming that another controller took over after one stale or empty state read.
+
 See [Spotify API changes](https://developer.spotify.com/documentation/web-api/references/changes/february-2026).
 Provider limits and contracts may change.
 
@@ -463,6 +478,7 @@ Spotify mixing/overlap or public/business-playback software.
 | Web Locks unavailable | Use a supporting browser in a secure context; do not clear storage to solve missing coordination |
 | Spotify 401 | Reconnect through Setup if authorization is invalid; retain the library, edits, settings and Client ID |
 | Refresh/token/network failure | Preserve data, check connectivity and retry or reconnect as needed; logout is not a prerequisite |
+| Start is acknowledged but no track appears | Retry the tile, refresh the selected Spotify device, or temporarily select Spotify's Web Player; Sarcastaball will not label one stale/empty state response as outside control |
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
 | No device / Spotify 404 | Activate Spotify, refresh/reselect the device, and check track availability |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |

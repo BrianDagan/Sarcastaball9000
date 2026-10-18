@@ -45,7 +45,16 @@ function controller(t, name = "Synthetic iPad") {
     throw new Error("Unexpected synthetic request");
   };
   app.window.testDevice = backend.device;
-  app.run("api = (...args) => window.testApi(...args); activeDeviceId = 'synthetic-device'; activeDeviceCapabilities = window.testDevice; trackPlayedOn = false");
+  app.run(`
+    api = (...args) => window.testApi(...args);
+    activeDeviceId = "synthetic-device";
+    activeDeviceCapabilities = window.testDevice;
+    trackPlayedOn = false;
+    trackPlaybackContexts.set("synthetic-song", {
+      requestedTrackId: "synthetic-song", resolvedTrackId: "synthetic-song",
+      trackUri: "spotify:track:synthetic-song", albumUri: null, durationMs: 180000,
+    });
+  `);
   app.backend = backend;
   app.plays = () => backend.requests.filter(request => request.path === "/me/player/play");
   app.tile = () => app.run(`

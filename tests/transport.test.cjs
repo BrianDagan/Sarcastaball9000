@@ -21,7 +21,16 @@ function player(t, stop = 30000) {
   app.window.document.getElementById("grid").appendChild(cell);
   app.window.testCell = cell;
   app.window.testApi = async () => null;
-  app.run("api = (...args) => window.testApi(...args); ensureDevice = async () => 'synthetic-device'; trackPlayedOn = false; activeDeviceCapabilities = { supports_volume: true };");
+  app.run(`
+    api = (...args) => window.testApi(...args);
+    ensureDevice = async () => "synthetic-device";
+    trackPlayedOn = false;
+    activeDeviceCapabilities = { supports_volume: true };
+    trackPlaybackContexts.set("synthetic-track", {
+      requestedTrackId: "synthetic-track", resolvedTrackId: "synthetic-track",
+      trackUri: "spotify:track:synthetic-track", albumUri: null, durationMs: 60000,
+    });
+  `);
   return app;
 }
 
@@ -34,6 +43,170 @@ function playbackState(isPlaying) {
     actions: { disallows: { [isPlaying ? "resuming" : "pausing"]: true, seeking: true } },
   };
 }
+
+test("album-context playback survives the native-client bare-track regression and relinking", async t => {
+  const app = player(t, 0);
+  const plays = [];
+  let state = null;
+  app.run("trackPlaybackContexts.clear(); activeDeviceCapabilities = { id: 'synthetic-device', type: 'Computer', supports_volume: false }");
+  app.window.testApi = async (path, options = {}) => {
+    if (path.startsWith("/tracks/synthetic-track")) {
+      return {
+        id: "synthetic-relinked-track",
+        uri: "spotify:track:synthetic-relinked-track",
+        duration_ms: 61000,
+        is_playable: true,
+        album: { uri: "spotify:album:synthetic-album" },
+      };
+    }
+    if (path.startsWith("/me/player/play")) {
+      const body = JSON.parse(options.body);
+      plays.push(body);
+      // This models the current Spotify native-client regression: a bare
+      // `uris` request is acknowledged but leaves no current item.
+      state = body.context_uri ? {
+        is_playing: true,
+        progress_ms: body.position_ms,
+        item: { id: "synthetic-relinked-track" },
+        device: { id: "synthetic-device", type: "Computer", supports_volume: false },
+        actions: { disallows: {} },
+      } : null;
+      return null;
+    }
+    if (path === "/me/player") return state;
+    return null;
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.deepEqual(plays, [{
+    context_uri: "spotify:album:synthetic-album",
+    offset: { uri: "spotify:track:synthetic-relinked-track" },
+    position_ms: 0,
+  }]);
+  assert.equal(app.run("playingSnapshot.spotifyTrackId"), "synthetic-relinked-track");
+  assert.equal(app.run("playingSnapshot.contextPlayback"), true);
+  assert.equal(app.run("progress.durationMs"), 61000);
+  assert.equal(app.run("transportStopDeadlineMs()"), 61000);
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+});
+
+test("track metadata failure falls back to direct playback without an album spillover deadline", async t => {
+  const app = player(t, 0);
+  const plays = [];
+  const warnings = [];
+  app.run("trackPlaybackContexts.clear(); activeDeviceCapabilities = { id: 'synthetic-device', type: 'Computer', supports_volume: false }");
+  app.window.console.warn = (...args) => warnings.push(args);
+  app.window.testApi = async (path, options = {}) => {
+    if (path.startsWith("/tracks/synthetic-track")) throw new Error("Synthetic metadata failure");
+    if (path.startsWith("/me/player/play")) plays.push(JSON.parse(options.body));
+    return null;
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.deepEqual(plays, [{
+    uris: ["spotify:track:synthetic-track"],
+    position_ms: 0,
+  }]);
+  assert.equal(app.run("playingSnapshot.contextPlayback"), false);
+  assert.equal(app.run("transportStopDeadlineMs()"), 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0][0], /album-context lookup failed/i);
+});
+
+test("Stop supersedes Start while album metadata is still loading", async t => {
+  const app = player(t);
+  const metadata = deferred();
+  const entered = deferred();
+  const paths = [];
+  app.run("trackPlaybackContexts.clear()");
+  app.window.testApi = async path => {
+    paths.push(path);
+    if (path.startsWith("/tracks/synthetic-track")) {
+      entered.resolve();
+      return metadata.promise;
+    }
+    return null;
+  };
+
+  const start = app.run("startPlayback(window.testCell)");
+  await entered.promise;
+  const stop = app.run("stopPlayback()");
+  metadata.resolve({
+    id: "synthetic-track",
+    uri: "spotify:track:synthetic-track",
+    duration_ms: 60000,
+    is_playable: true,
+    album: { uri: "spotify:album:synthetic-album" },
+  });
+
+  assert.equal(await start, false);
+  assert.equal(await stop, true);
+  assert.deepEqual(paths, [
+    "/tracks/synthetic-track?market=from_token",
+    "/me/player/pause",
+  ]);
+  assert.equal(app.run("nowPlaying"), null);
+});
+
+test("a transient post-Start null state does not surrender cue control", async t => {
+  const app = player(t);
+  let clock = 0;
+  let state = null;
+  app.window.performance.now = () => clock;
+  app.window.testApi = async (path, options = {}) => {
+    if (path.startsWith("/me/player/play")) return null;
+    if (path === "/me/player") return state;
+    return null;
+  };
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  clock = 4500;
+  state = playbackState(true);
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
+});
+
+test("only spaced consistent mismatches end local cue control", async t => {
+  const app = player(t);
+  let clock = 0;
+  app.window.performance.now = () => clock;
+  app.window.testApi = async () => ({
+    is_playing: true,
+    progress_ms: 9000,
+    item: { id: "external-track" },
+    device: { id: "other-device", supports_volume: true },
+    actions: { disallows: {} },
+  });
+  app.run("setNowPlaying(window.testCell)");
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  clock = 500;
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  clock = 1500;
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying"), null);
+  assert.match(app.window.document.getElementById("toast").textContent, /consistently reported a different track/i);
+});
+
+test("sustained missing playback is reported as unconfirmed, not external control", async t => {
+  const app = player(t);
+  let clock = 0;
+  app.window.performance.now = () => clock;
+  app.window.testApi = async () => null;
+  app.run("setNowPlaying(window.testCell)");
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  clock = 1500;
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying"), null);
+  const status = app.window.document.getElementById("transport-status");
+  assert.equal(status.classList.contains("hidden"), false);
+  assert.match(status.textContent, /acknowledged the command but did not report the requested track/i);
+  assert.doesNotMatch(app.window.document.getElementById("toast")?.textContent || "", /outside this controller/i);
+});
 
 for (const [device, userAgent, platform, maxTouchPoints] of [
   ["iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Version/18.0 Mobile Safari/604.1", "iPhone", 5],

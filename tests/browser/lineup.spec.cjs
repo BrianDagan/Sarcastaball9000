@@ -74,6 +74,10 @@ async function installRecorder(page) {
     };
     activeDeviceId = window.lineupTest.device.id;
     activeDeviceCapabilities = window.lineupTest.device;
+    trackPlaybackContexts.set("synthetic-track-0", {
+      requestedTrackId: "synthetic-track-0", resolvedTrackId: "synthetic-track-0",
+      trackUri: "spotify:track:synthetic-track-0", albumUri: null, durationMs: 123456,
+    });
     setTrackPlayed(false);
   });
 }

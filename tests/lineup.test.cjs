@@ -24,6 +24,10 @@ async function lineupApp(t, { origin, restore = false } = {}) {
 
 function installPlaybackRecorder(app) {
   const requests = [];
+  app.run(`trackPlaybackContexts.set("synthetic-track-0", {
+    requestedTrackId: "synthetic-track-0", resolvedTrackId: "synthetic-track-0",
+    trackUri: "spotify:track:synthetic-track-0", albumUri: null, durationMs: 123456,
+  })`);
   app.window.recordLineupApi = async (path, options = {}, current) => {
     if (current && !current()) throw new Error("Synthetic request was superseded");
     requests.push({ path, method: options.method, body: options.body ? JSON.parse(options.body) : null });
@@ -443,6 +447,10 @@ test("an absent player's Pause keeps eligible iPad silence alive while blocking 
     if (path === "/me/player/devices") return { devices: [device] };
     if (path === "/me/player" && !options.method) return structuredClone(state);
     if (path === `/tracks/${silence}`) return { id: silence, duration_ms: 600000, is_playable: true };
+    if (path.startsWith("/tracks/")) {
+      const id = path.split("/").at(-1);
+      return { id, uri: `spotify:track:${id}`, duration_ms: 123456, is_playable: true };
+    }
     if (path === "/me/player/pause") { state.is_playing = false; return null; }
     if (path === "/me/player/play") {
       state.item = { id: body.uris[0].split(":").at(-1), duration_ms: 600000 };
