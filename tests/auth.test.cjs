@@ -84,6 +84,20 @@ test("failed playback commands still report HTTP errors regardless of response f
   }
 });
 
+test("Spotify's reasonless no-active-device message is classified without exposing provider text", async t => {
+  const app = authenticatedApi(t);
+  app.window.fetch = async () => new Response(JSON.stringify({
+    error: { status: 404, message: "Player command failed: No active device found" },
+  }), { status: 404 });
+  await assert.rejects(app.run("api('/me/player/play', {method:'PUT'})"), error => {
+    assert.equal(error.status, 404);
+    assert.equal(error.reason, "NO_ACTIVE_DEVICE");
+    assert.match(error.message, /no active playback device/i);
+    assert.doesNotMatch(error.message, /Player command failed/i);
+    return true;
+  });
+});
+
 test("concurrent requests share one refresh", async t => {
   const app = signedIn(t);
   const request = deferred();

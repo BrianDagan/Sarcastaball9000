@@ -156,28 +156,73 @@ test("Start reactivates an inactive selected device and retries once after NO_AC
   assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
 });
 
-test("an unrelated active-device 404 is not hidden by transfer retries", async t => {
+test("a reasonless 404 reactivates a device whose active flag is stale", async t => {
   const app = player(t);
   const paths = [];
   const unavailable = app.run("new SpotifyError(404, null, null)");
+  let attempts = 0;
+  let transfers = 0;
   app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
   app.window.testApi = async (path, options = {}) => {
     paths.push(path);
-    if (path.startsWith("/me/player/play")) throw unavailable;
+    if (path.startsWith("/me/player/play")) {
+      attempts++;
+      if (attempts === 1) throw unavailable;
+      return null;
+    }
     if (path === "/me/player/devices") {
       return { devices: [{
         id: "synthetic-device", name: "Synthetic iPad", is_active: true,
         is_restricted: false, supports_volume: false,
       }] };
     }
+    if (path === "/me/player" && options.method === "PUT") {
+      transfers++;
+      return null;
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.equal(attempts, 2);
+  assert.equal(transfers, 1);
+  assert.deepEqual(paths, [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player/devices",
+    "/me/player",
+    "/me/player/devices",
+    "/me/player/play?device_id=synthetic-device",
+  ]);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+});
+
+test("a genuine playback 404 remains visible after one bounded recovery retry", async t => {
+  const app = player(t);
+  const unavailable = app.run("new SpotifyError(404, null, null)");
+  let attempts = 0;
+  let transfers = 0;
+  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.window.testApi = async (path, options = {}) => {
+    if (path.startsWith("/me/player/play")) {
+      attempts++;
+      throw unavailable;
+    }
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: true,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") {
+      transfers++;
+      return null;
+    }
     throw new Error(`Unexpected synthetic request: ${path}`);
   };
 
   assert.equal(await app.run("startPlayback(window.testCell)"), false);
-  assert.deepEqual(paths, [
-    "/me/player/play?device_id=synthetic-device",
-    "/me/player/devices",
-  ]);
+  assert.equal(attempts, 2);
+  assert.equal(transfers, 1);
   assert.equal(app.run("nowPlaying"), null);
   assert.match(app.window.document.getElementById("transport-status").textContent, /requested item or playback device is unavailable/i);
 });

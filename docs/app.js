@@ -1886,9 +1886,14 @@ async function spotifyFailure(response) {
   try {
     const body = await response.json();
     const candidate = body?.error?.reason;
+    const message = body?.error?.message;
     if (body?.error === "invalid_grant") reason = "INVALID_GRANT";
     if (["QUOTA_EXCEEDED", "NO_ACTIVE_DEVICE", "RESTRICTION_VIOLATED", "PREMIUM_REQUIRED"].includes(candidate)) {
       reason = candidate;
+    }
+    if (!reason && response.status === 404 && typeof message === "string" &&
+        /\bno active (?:playback )?device\b/i.test(message)) {
+      reason = "NO_ACTIVE_DEVICE";
     }
   } catch {
     // An error response need not be JSON; never display its raw body.
@@ -2677,7 +2682,6 @@ async function playOnDevice(deviceId, body, current, permitRecovery = null) {
     if (!(error instanceof SpotifyError) || error.status !== 404 || !current()) throw error;
     const device = await refreshPlaybackDevice(deviceId, current);
     if (!device || !current()) return false;
-    if (error.reason !== "NO_ACTIVE_DEVICE" && device.is_active) throw error;
     if (permitRecovery && !await permitRecovery(device, current)) return false;
     const active = await reactivatePlaybackDevice(deviceId, current, device);
     if (!active || !current()) return false;

@@ -47,6 +47,7 @@ async function prepare(page, options = {}) {
     playable: options.playable !== false,
     failSilence: false,
     failNextPlayNoActive: options.failNextPlayNoActive === true,
+    failNextPlayWithoutReason: options.failNextPlayWithoutReason === true,
     calls: [],
     unexpected: [],
     state: {
@@ -112,6 +113,12 @@ async function prepare(page, options = {}) {
         } });
       }
       if (method === "PUT" && url.pathname === "/v1/me/player/play") {
+        if (backend.failNextPlayWithoutReason) {
+          backend.failNextPlayWithoutReason = false;
+          return route.fulfill({ status: 404, json: {
+            error: { status: 404, message: "Synthetic unavailable item or device" },
+          } });
+        }
         if (backend.failNextPlayNoActive) {
           backend.failNextPlayNoActive = false;
           return route.fulfill({ status: 404, json: {
@@ -300,6 +307,15 @@ test("a saved iPad selection starts known silence automatically with the default
   await expect(guidance).toContainText(/queue/i);
   await expect(guidance).toContainText(/clos|hid|background/i);
   await expect(guidance).toContainText(/not necessarily|not guaranteed|cannot guarantee|can't guarantee/i);
+});
+
+test("coffee-cup idle silence recovers from a reasonless 404 and stale active flag", async ({ page }) => {
+  const backend = await prepare(page, { failNextPlayWithoutReason: true });
+  await expect.poll(() => plays(backend).length).toBe(2);
+  expect(commands(backend, "/v1/me/player").map(call => call.body)).toEqual([
+    { device_ids: [DEVICE_ID], play: false },
+  ]);
+  await expectIdleStatus(page);
 });
 
 test("Start reactivates an inactive selected device after Spotify reports NO_ACTIVE_DEVICE", async ({ page }) => {
