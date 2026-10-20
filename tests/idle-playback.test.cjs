@@ -184,6 +184,109 @@ test("default idle behavior starts only on a freshly available selected iPad dev
   assert.equal(app.backend.requests.some(request => /volume|repeat/.test(request.path)), false);
 });
 
+test("idle silence reactivates the selected iPad and retries once after NO_ACTIVE_DEVICE", async t => {
+  const app = controller(t);
+  const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
+  let active = false;
+  let playAttempts = 0;
+  app.backend.requests.length = 0;
+  app.window.testApi = async (url, options = {}, current) => {
+    assert.ok(!current || current());
+    const request = {
+      path: url.split("?")[0], method: options.method || "GET",
+      body: options.body ? JSON.parse(options.body) : null,
+    };
+    app.backend.requests.push(request);
+    const device = { ...app.backend.device, is_active: active };
+    if (request.path === "/me/player/devices") return { devices: [device] };
+    if (request.path === "/me/player" && request.method === "GET") {
+      return structuredClone({ ...app.backend.state, device });
+    }
+    if (request.path === `/tracks/${SILENCE}`) {
+      return { id: SILENCE, duration_ms: app.backend.duration, is_playable: true };
+    }
+    if (request.path === "/me/player" && request.method === "PUT") {
+      assert.deepEqual(request.body, { device_ids: ["synthetic-device"], play: false });
+      active = true;
+      return null;
+    }
+    if (request.path === "/me/player/play") {
+      playAttempts++;
+      if (playAttempts === 1) throw noActive;
+      app.backend.state.item = { id: SILENCE, duration_ms: app.backend.duration };
+      app.backend.state.progress_ms = 0;
+      app.backend.state.is_playing = true;
+      return null;
+    }
+    throw new Error(`Unexpected synthetic request: ${request.path}`);
+  };
+
+  assert.equal(await app.run("checkIdlePlayback()"), true);
+  assert.equal(playAttempts, 2);
+  assert.equal(app.run("idleFailure"), null);
+  assert.equal(app.run("idlePlayback.deviceId"), "synthetic-device");
+  assert.deepEqual(app.backend.requests.map(request => `${request.method} ${request.path}`), [
+    "GET /me/player/devices",
+    "GET /me/player",
+    `GET /tracks/${SILENCE}`,
+    "GET /me/player",
+    "PUT /me/player/play",
+    "GET /me/player/devices",
+    "GET /me/player",
+    "PUT /me/player",
+    "GET /me/player/devices",
+    "GET /me/player",
+    "PUT /me/player/play",
+  ]);
+  assert.equal(app.backend.requests.some(request => /repeat|queue|volume/.test(request.path)), false);
+});
+
+test("idle recovery does not retry silence when external music appears during activation", async t => {
+  const app = controller(t);
+  const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
+  let active = false;
+  let playFailed = false;
+  let transfers = 0;
+  let playAttempts = 0;
+  app.window.testApi = async (url, options = {}, current) => {
+    assert.ok(!current || current());
+    const path = url.split("?")[0];
+    const method = options.method || "GET";
+    const selected = { ...app.backend.device, is_active: active };
+    if (path === "/me/player/devices") return { devices: [selected] };
+    if (path === "/me/player" && method === "GET") {
+      if (playFailed) {
+        return {
+          device: { id: "external-device", name: "Synthetic Laptop" },
+          item: { id: "external-song", duration_ms: 250000 },
+          progress_ms: 1000, is_playing: true, repeat_state: "off",
+        };
+      }
+      return structuredClone({ ...app.backend.state, device: selected });
+    }
+    if (path === `/tracks/${SILENCE}`) {
+      return { id: SILENCE, duration_ms: app.backend.duration, is_playable: true };
+    }
+    if (path === "/me/player" && method === "PUT") {
+      transfers++;
+      active = true;
+      return null;
+    }
+    if (path === "/me/player/play") {
+      playAttempts++;
+      playFailed = true;
+      throw noActive;
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("checkIdlePlayback()"), false);
+  assert.equal(playAttempts, 1);
+  assert.equal(transfers, 0);
+  assert.equal(app.run("idlePlayback"), null);
+  assert.equal(app.run("idleFailure"), null);
+});
+
 for (const name of ["Synthetic iPhone", "Synthetic Laptop", "Synthetic Mac"]) {
   test(`${name} is never eligible, even in an iPad browser`, async t => {
     const app = controller(t, name);

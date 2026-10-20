@@ -1868,7 +1868,9 @@ class SpotifyError extends Error {
       400: reason === "INVALID_GRANT" ? "Spotify authorization was rejected. Reconnect in Setup; your library and settings are preserved." : "The request failed. Check Setup and try again.",
       401: "Reconnect to Spotify in Setup.",
       403: "Check the app allowlist, granted permissions and device capabilities.",
-      404: "The requested item or playback device is unavailable.",
+      404: reason === "NO_ACTIVE_DEVICE"
+        ? "Spotify has no active playback device."
+        : "The requested item or playback device is unavailable.",
       429: reason === "QUOTA_EXCEEDED" ? "The app's Spotify quota is exhausted." : "Rate limited; wait before retrying.",
     };
     super(`Spotify ${status}: ${guidance[status] || "The request failed. Try again when the service is available."}`);
@@ -2227,6 +2229,8 @@ let volumeFineThrottle = null;
 const PLAYBACK_STABILIZE_MS = 4000;
 const PLAYBACK_MISMATCH_CONFIRMATIONS = 2;
 const PLAYBACK_MISMATCH_MIN_INTERVAL_MS = 1000;
+const DEVICE_ACTIVATION_POLL_MS = 250;
+const DEVICE_ACTIVATION_POLLS = 6;
 const IDLE_SILENCE_TRACK = "3mkOlbSv5RYadx0JsjTrKq";
 const IDLE_CHECK_MS = 30000;
 const IDLE_PLAYBACK_CHECK_MS = 15000;
@@ -2476,9 +2480,13 @@ async function maintainIdlePlayback(current) {
     idlePendingDevice = pendingDevice;
     const requestedAt = performance.now();
     try {
-      await api(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, {
-        method: "PUT", body: JSON.stringify({ uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0 }),
-      }, live);
+      const started = await playOnDevice(device.id, {
+        uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0,
+      }, live, async (active, current) => {
+        const recoveredState = await api("/me/player", {}, current);
+        return current() && idleStatePermitsPlayback(recoveredState, active);
+      });
+      if (!started) return false;
     } finally {
       if (idlePendingDevice === pendingDevice) idlePendingDevice = null;
     }
@@ -2613,6 +2621,78 @@ async function buildTrackPlayRequest(trackId, positionMs, current) {
     ? { context_uri: context.albumUri, offset: { uri: context.trackUri }, position_ms: positionMs }
     : { uris: [context.trackUri], position_ms: positionMs };
   return { ...context, body, usesContext: !!context.albumUri };
+}
+
+function waitForPlaybackDevice(current) {
+  return new Promise(resolve => {
+    setTimeout(() => resolve(current()), DEVICE_ACTIVATION_POLL_MS);
+  });
+}
+
+function rememberPlaybackDevice(device) {
+  activeDeviceId = device.id;
+  activeDeviceCapabilities = device;
+  updateVolumeControls();
+  return device;
+}
+
+async function refreshPlaybackDevice(deviceId, current) {
+  const result = await api("/me/player/devices", {}, current);
+  if (!current()) return null;
+  const device = (result?.devices || []).find(item => item.id === deviceId);
+  if (!device) {
+    throw new Error("The selected Spotify device is asleep or unavailable. Open Spotify on that device once, then press Retry.");
+  }
+  if (device.is_restricted) {
+    throw new Error("The selected Spotify device currently blocks remote playback.");
+  }
+  return rememberPlaybackDevice(device);
+}
+
+async function reactivatePlaybackDevice(deviceId, current, knownDevice = null) {
+  let device = knownDevice || await refreshPlaybackDevice(deviceId, current);
+  if (!device || !current()) return null;
+  await api("/me/player", {
+    method: "PUT",
+    body: JSON.stringify({ device_ids: [deviceId], play: false }),
+  }, current);
+  if (!current()) return null;
+  for (let attempt = 0; attempt < DEVICE_ACTIVATION_POLLS; attempt++) {
+    device = await refreshPlaybackDevice(deviceId, current);
+    if (!device || !current()) return null;
+    if (device.is_active) return device;
+    if (attempt + 1 < DEVICE_ACTIVATION_POLLS && !await waitForPlaybackDevice(current)) return null;
+  }
+  throw new Error("Spotify found the selected device but could not activate it. Open Spotify on that device once, then press Retry.");
+}
+
+async function playOnDevice(deviceId, body, current, permitRecovery = null) {
+  const play = () => api(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
+    method: "PUT", ...(body ? { body: JSON.stringify(body) } : {}),
+  }, current);
+  try {
+    await play();
+    return current();
+  } catch (error) {
+    if (!(error instanceof SpotifyError) || error.status !== 404 || !current()) throw error;
+    const device = await refreshPlaybackDevice(deviceId, current);
+    if (!device || !current()) return false;
+    if (error.reason !== "NO_ACTIVE_DEVICE" && device.is_active) throw error;
+    if (permitRecovery && !await permitRecovery(device, current)) return false;
+    const active = await reactivatePlaybackDevice(deviceId, current, device);
+    if (!active || !current()) return false;
+    if (permitRecovery && !await permitRecovery(active, current)) return false;
+    try {
+      await play();
+      return current();
+    } catch (retryError) {
+      if (retryError instanceof SpotifyError && retryError.status === 404 &&
+          retryError.reason === "NO_ACTIVE_DEVICE") {
+        throw new Error("Spotify reactivated the selected device but still could not start playback. Open Spotify on that device once, then press Retry.");
+      }
+      throw retryError;
+    }
+  }
 }
 
 function rememberPlaybackExpectation(request, deviceId, issuedAt) {
@@ -2940,9 +3020,7 @@ async function startPlayback(cell) {
     const t0 = performance.now();
     const issuedAt = Date.now();
     try {
-      await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
-        method: "PUT", body: JSON.stringify(playbackRequest.body),
-      }, permitted);
+      if (!await playOnDevice(dev, playbackRequest.body, permitted)) return;
     } catch (error) { setLatency(performance.now() - t0, false); throw error; }
     if (!current()) return;
     setLatency(performance.now() - t0);
@@ -3074,9 +3152,7 @@ async function resumePlayback() {
       : null;
     if (idleResume?.uuid === nowPlaying.uuid && (!restore || !permitted())) return;
     const issuedAt = Date.now();
-    await api(`/me/player/play?device_id=${encodeURIComponent(dev)}`, {
-      method: "PUT", ...(restore ? { body: JSON.stringify(restore.body) } : {}),
-    }, permitted);
+    if (!await playOnDevice(dev, restore?.body || null, permitted)) return;
     if (!current() || !nowPlaying) return;
     if (restore && playingSnapshot) {
       playingSnapshot.spotifyTrackId = restore.resolvedTrackId;

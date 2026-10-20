@@ -46,6 +46,7 @@ async function prepare(page, options = {}) {
     durationMs: options.durationMs || 93750,
     playable: options.playable !== false,
     failSilence: false,
+    failNextPlayNoActive: options.failNextPlayNoActive === true,
     calls: [],
     unexpected: [],
     state: {
@@ -111,6 +112,12 @@ async function prepare(page, options = {}) {
         } });
       }
       if (method === "PUT" && url.pathname === "/v1/me/player/play") {
+        if (backend.failNextPlayNoActive) {
+          backend.failNextPlayNoActive = false;
+          return route.fulfill({ status: 404, json: {
+            error: { status: 404, message: "Synthetic inactive device", reason: "NO_ACTIVE_DEVICE" },
+          } });
+        }
         const uri = call.body?.uris?.[0] || call.body?.offset?.uri;
         const id = uri?.replace("spotify:track:", "") || backend.state.item?.id;
         if (id === SILENCE_ID && backend.failSilence) {
@@ -293,6 +300,23 @@ test("a saved iPad selection starts known silence automatically with the default
   await expect(guidance).toContainText(/queue/i);
   await expect(guidance).toContainText(/clos|hid|background/i);
   await expect(guidance).toContainText(/not necessarily|not guaranteed|cannot guarantee|can't guarantee/i);
+});
+
+test("Start reactivates an inactive selected device after Spotify reports NO_ACTIVE_DEVICE", async ({ page }) => {
+  const inactive = device(DEVICE_ID, "Synthetic iPad", { is_active: false });
+  const backend = await prepare(page, {
+    devices: [inactive], stateDevice: inactive, keepAlive: false,
+    failNextPlayNoActive: true,
+  });
+  await loadLibrary(page);
+  await page.locator("#grid .cell").first().click();
+  await expect(page.locator("#grid .cell").first()).toHaveClass(/playing/);
+  await expect.poll(() => plays(backend, SONG_URI).length).toBe(2);
+  expect(commands(backend, "/v1/me/player").map(call => call.body)).toEqual([
+    { device_ids: [DEVICE_ID], play: false },
+  ]);
+  expect(backend.devices[0].is_active).toBe(true);
+  await expect(page.locator("#transport-status")).toBeHidden();
 });
 
 test("idle status actions stay readable, keyboard-accessible and within a narrow screen", async ({ page }) => {

@@ -89,6 +89,19 @@ A manually requested Fade Out keeps its configured delayed stop even when it
 cannot ramp the volume. Supported desktop/device volume control remains available;
 genuine API failures are still reported.
 
+If Start, Resume or eligible idle-silence playback receives Spotify's
+`NO_ACTIVE_DEVICE` 404, Sarcastaball refreshes the device list, transfers playback
+to the exact selected unrestricted device with `play: false`, waits for Spotify
+to report that device active, then retries the original play command once. It
+does not choose another device, repeatedly fight for control or hide a second
+failure. An ambiguous 404 is not retried when Spotify already reports the target
+active, because the track or context may instead be unavailable.
+
+This recovery can reactivate a selected device that Spotify still advertises; it
+cannot wake an iPad that has disappeared from Spotify's device list. In that
+case, open Spotify on the intended iPad once, then return and use **Retry**.
+Sign-in, settings, the library and edits remain intact.
+
 There is no automatic fade-on-pause in the iPad/iPhone controller configuration.
 Spotify plays the audio in its own app, and Sarcastaball cannot ramp its level
 without supported volume commands. Pause therefore stops the song directly
@@ -330,10 +343,12 @@ directly when stopping audio matters.
 
 Missing/offline iPads, restricted devices, unavailable catalog content and
 provider denials are recoverable errors, not reasons to log out or clear data.
-Keep the app visible, open Spotify on the intended device, refresh/reselect it
-and use **Retry** after addressing the reported cause. If repeat is the blocker,
-turn it Off in Spotify yourself. Respect any rate-limit wait; repeated retries
-do not fix provider eligibility or quota restrictions.
+Keep the app visible. The first `NO_ACTIVE_DEVICE` play failure gets the bounded
+reactivation attempt described above. If the iPad is absent from Spotify's fresh
+device list or does not reactivate, open Spotify on it once, return, refresh or
+reselect it if needed, and use **Retry**. If repeat is the blocker, turn it Off
+in Spotify yourself. Respect any rate-limit wait; repeated retries do not fix
+provider eligibility or quota restrictions.
 
 ### Safe manual acceptance check
 
@@ -480,7 +495,7 @@ Spotify mixing/overlap or public/business-playback software.
 | Refresh/token/network failure | Preserve data, check connectivity and retry or reconnect as needed; logout is not a prerequisite |
 | Start is acknowledged but no track appears | Retry the tile, refresh the selected Spotify device, or temporarily select Spotify's Web Player; Sarcastaball will not label one stale/empty state response as outside control |
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
-| No device / Spotify 404 | Activate Spotify, refresh/reselect the device, and check track availability |
+| No active device / Spotify 404 | Sarcastaball tries one confirmed transfer-and-retry when Spotify still lists the selected device. If it is missing or recovery fails, open Spotify on that device once, return, refresh/reselect if needed, and Retry. An already-active device can instead indicate unavailable track/context content. |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
 | iPad keep-awake unavailable/failed | Check the selected name contains `iPad`, device presence/restrictions, valid authorization and repeat Off; keep the page visible and Retry after resolving the reported cause, without logout/reset |
 | Spotify keeps playing after Stop | With eligible keep-awake enabled, Stop clears the tile but leaves silent playback running; disable the setting and confirm Spotify pauses, or stop directly in Spotify |

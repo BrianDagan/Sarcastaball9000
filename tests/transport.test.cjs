@@ -114,6 +114,182 @@ test("track metadata failure falls back to direct playback without an album spil
   assert.match(warnings[0][0], /album-context lookup failed/i);
 });
 
+test("Start reactivates an inactive selected device and retries once after NO_ACTIVE_DEVICE", async t => {
+  const app = player(t);
+  const requests = [];
+  let active = false;
+  let attempts = 0;
+  const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
+  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.window.testApi = async (path, options = {}) => {
+    requests.push({ path, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null });
+    if (path.startsWith("/me/player/play")) {
+      attempts++;
+      if (attempts === 1) throw noActive;
+      return null;
+    }
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: active,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") {
+      active = true;
+      return null;
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.equal(attempts, 2);
+  assert.deepEqual(requests.map(request => request.path), [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player/devices",
+    "/me/player",
+    "/me/player/devices",
+    "/me/player/play?device_id=synthetic-device",
+  ]);
+  assert.deepEqual(requests[2].body, { device_ids: ["synthetic-device"], play: false });
+  assert.deepEqual(requests[0].body, requests[4].body);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
+});
+
+test("an unrelated active-device 404 is not hidden by transfer retries", async t => {
+  const app = player(t);
+  const paths = [];
+  const unavailable = app.run("new SpotifyError(404, null, null)");
+  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.window.testApi = async (path, options = {}) => {
+    paths.push(path);
+    if (path.startsWith("/me/player/play")) throw unavailable;
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: true,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), false);
+  assert.deepEqual(paths, [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player/devices",
+  ]);
+  assert.equal(app.run("nowPlaying"), null);
+  assert.match(app.window.document.getElementById("transport-status").textContent, /requested item or playback device is unavailable/i);
+});
+
+for (const scenario of [
+  {
+    name: "missing",
+    devices: [],
+    message: /selected Spotify device is asleep or unavailable/i,
+  },
+  {
+    name: "restricted",
+    devices: [{
+      id: "synthetic-device", name: "Synthetic iPad", is_active: false,
+      is_restricted: true, supports_volume: false,
+    }],
+    message: /currently blocks remote playback/i,
+  },
+]) {
+  test(`inactive-device recovery fails explicitly when the selected device is ${scenario.name}`, async t => {
+    const app = player(t);
+    const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
+    const paths = [];
+    app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+    app.window.testApi = async path => {
+      paths.push(path);
+      if (path.startsWith("/me/player/play")) throw noActive;
+      if (path === "/me/player/devices") return { devices: structuredClone(scenario.devices) };
+      throw new Error(`Unexpected synthetic request: ${path}`);
+    };
+
+    assert.equal(await app.run("startPlayback(window.testCell)"), false);
+    assert.deepEqual(paths, [
+      "/me/player/play?device_id=synthetic-device",
+      "/me/player/devices",
+    ]);
+    assert.equal(app.run("nowPlaying"), null);
+    assert.match(app.window.document.getElementById("transport-status").textContent, scenario.message);
+  });
+}
+
+test("inactive-device recovery stops after one failed playback retry", async t => {
+  const app = player(t);
+  const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
+  let active = false;
+  let playAttempts = 0;
+  let transfers = 0;
+  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.window.testApi = async (path, options = {}) => {
+    if (path.startsWith("/me/player/play")) {
+      playAttempts++;
+      throw noActive;
+    }
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: active,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") {
+      transfers++;
+      active = true;
+      return null;
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), false);
+  assert.equal(playAttempts, 2);
+  assert.equal(transfers, 1);
+  assert.equal(app.run("nowPlaying"), null);
+  assert.match(app.window.document.getElementById("transport-status").textContent, /reactivated the selected device but still could not start playback/i);
+});
+
+test("Stop supersedes Start while inactive-device recovery is refreshing", async t => {
+  const app = player(t);
+  const devices = deferred();
+  const entered = deferred();
+  const paths = [];
+  const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
+  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.window.testApi = async (path, options = {}) => {
+    paths.push(path);
+    if (path.startsWith("/me/player/play")) {
+      throw noActive;
+    }
+    if (path === "/me/player/devices") {
+      entered.resolve();
+      return devices.promise;
+    }
+    if (path === "/me/player/pause") return null;
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  const start = app.run("startPlayback(window.testCell)");
+  await entered.promise;
+  const stop = app.run("stopPlayback()");
+  devices.resolve({ devices: [{
+    id: "synthetic-device", name: "Synthetic iPad", is_active: false,
+    is_restricted: false, supports_volume: false,
+  }] });
+
+  assert.equal(await start, false);
+  assert.equal(await stop, true);
+  assert.deepEqual(paths, [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player/devices",
+    "/me/player/pause",
+  ]);
+  assert.equal(app.run("nowPlaying"), null);
+});
+
 test("Stop supersedes Start while album metadata is still loading", async t => {
   const app = player(t);
   const metadata = deferred();
