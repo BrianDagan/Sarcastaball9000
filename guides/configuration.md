@@ -91,13 +91,15 @@ genuine API failures are still reported.
 
 If Start, Resume or eligible idle-silence playback receives a Spotify playback
 404, Sarcastaball refreshes the device list, transfers playback to the exact
-selected unrestricted device with `play: false`, waits for Spotify to report
-that device active, then retries the original play command once. Spotify
+selected unrestricted device with `play: false`, allows one short settling
+interval, then retries the original play command once. Spotify
 sometimes omits `NO_ACTIVE_DEVICE` from this error and can still report a stale
 active flag, so the same bounded attempt applies to that inconsistent response.
 It does not choose another device, repeatedly fight for control or hide a second
 failure; genuinely unavailable track or context content still fails after the
-single retry.
+single retry. Recovery uses one fresh device-list lookup and no rapid activation
+status-polling loop. Automatic idle recovery makes at most one additional fresh
+playback-state safety check before transferring the device.
 
 This recovery can reactivate a selected device that Spotify still advertises; it
 cannot wake an iPad that has disappeared from Spotify's device list. In that
@@ -301,6 +303,13 @@ With keep-awake enabled and the selected device eligible:
 - **Stop clears the active tile but starts or continues silent Spotify
   playback. Stop does not stop Spotify while this mode is active.**
 
+Pause and Stop are deliberate handoffs: after Spotify acknowledges the pause,
+the app starts silence even if the next fresh state response still reports the
+same just-paused song as playing. A different track or device still blocks the
+handoff so automatic silence cannot replace unrelated music. The first handoff
+uses one fresh device-list read and one fresh playback-state read after silence
+metadata is available; it does not loop on status.
+
 Automatic idle playback also preserves a locally paused tile. It can, however,
 replace the Spotify playback context of a song paused outside DJDad. DJDad
 cannot export or restore Spotify's remote queue; the saved local tile/position
@@ -328,8 +337,10 @@ the normal polling interval. Delayed observations from before a confirmed restar
 cannot move the new cycle's deadline back to the old one.
 
 Each restart still requires fresh eligible device/playback state, valid auth and
-a visible page. This is not an unconditional timer that overwrites another song.
-The app does not enable
+a visible page. While owned silence is running, routine scheduled health checks
+occur no more than once per minute, with the known track duration pulling the
+next check forward only when renewal is due. This is not an unconditional timer
+or a high-frequency status loop that overwrites another song. The app does not enable
 Spotify's global Repeat One or issue repeat/queue-management commands. Repeat
 must remain confirmed Off.
 
@@ -497,7 +508,7 @@ Spotify mixing/overlap or public/business-playback software.
 | Refresh/token/network failure | Preserve data, check connectivity and retry or reconnect as needed; logout is not a prerequisite |
 | Start is acknowledged but no track appears | Retry the tile, refresh the selected Spotify device, or temporarily select Spotify's Web Player; Sarcastaball will not label one stale/empty state response as outside control |
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
-| No active device / Spotify 404 | Sarcastaball tries one confirmed transfer-and-retry when Spotify still lists the selected device, including when Spotify omits the inactive-device reason or reports a stale active flag. If it is missing or recovery fails, open Spotify on that device once, return, refresh/reselect if needed, and Retry. Unavailable track/context content still fails after the bounded retry. |
+| No active device / Spotify 404 | Sarcastaball makes one device-list check, one transfer with a short settling delay, and one playback retry when Spotify still lists the selected device, including when Spotify omits the inactive-device reason or reports a stale active flag. It does not rapidly poll activation status. If the device is missing or recovery fails, open Spotify there once, return, refresh/reselect if needed, and Retry. Unavailable track/context content still fails after the bounded retry. |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
 | iPad keep-awake unavailable/failed | Check the selected name contains `iPad`, device presence/restrictions, valid authorization and repeat Off; keep the page visible and Retry after resolving the reported cause, without logout/reset |
 | Spotify keeps playing after Stop | With eligible keep-awake enabled, Stop clears the tile but leaves silent playback running; disable the setting and confirm Spotify pauses, or stop directly in Spotify |

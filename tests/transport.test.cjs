@@ -147,11 +147,10 @@ test("Start reactivates an inactive selected device and retries once after NO_AC
     "/me/player/play?device_id=synthetic-device",
     "/me/player/devices",
     "/me/player",
-    "/me/player/devices",
     "/me/player/play?device_id=synthetic-device",
   ]);
   assert.deepEqual(requests[2].body, { device_ids: ["synthetic-device"], play: false });
-  assert.deepEqual(requests[0].body, requests[4].body);
+  assert.deepEqual(requests[0].body, requests[3].body);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
   assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
 });
@@ -190,7 +189,6 @@ test("a reasonless 404 reactivates a device whose active flag is stale", async t
     "/me/player/play?device_id=synthetic-device",
     "/me/player/devices",
     "/me/player",
-    "/me/player/devices",
     "/me/player/play?device_id=synthetic-device",
   ]);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");

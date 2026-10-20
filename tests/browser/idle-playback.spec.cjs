@@ -48,6 +48,7 @@ async function prepare(page, options = {}) {
     failSilence: false,
     failNextPlayNoActive: options.failNextPlayNoActive === true,
     failNextPlayWithoutReason: options.failNextPlayWithoutReason === true,
+    leavePauseStateStale: false,
     calls: [],
     unexpected: [],
     state: {
@@ -137,7 +138,7 @@ async function prepare(page, options = {}) {
         return route.fulfill({ status: 204 });
       }
       if (method === "PUT" && url.pathname === "/v1/me/player/pause") {
-        backend.state.is_playing = false;
+        if (!backend.leavePauseStateStale) backend.state.is_playing = false;
         return route.fulfill({ status: 204 });
       }
       if (method === "PUT" && url.pathname === "/v1/me/player") {
@@ -454,9 +455,14 @@ test("iPad Pause plays silence but Resume restores the original song and paused 
   expect(plays(backend)).toEqual([]);
   backend.state.progress_ms = 42500;
   await page.evaluate(() => reconcilePlayback());
+  backend.leavePauseStateStale = true;
+  const pauseStart = backend.calls.length;
   await page.locator("#np-pause").click();
   await expect.poll(() => plays(backend).length).toBe(1);
   await page.evaluate(() => transportQueue);
+  const handoff = backend.calls.slice(pauseStart, backend.calls.indexOf(plays(backend)[0]) + 1);
+  expect(handoff.filter(call => call.method === "GET" && call.path === "/v1/me/player")).toHaveLength(1);
+  expect(handoff.filter(call => call.method === "GET" && call.path === "/v1/me/player/devices")).toHaveLength(1);
   const paused = await page.evaluate(() => ({
     uuid: nowPlaying?.uuid, trackId: playingSnapshot?.trackid,
     paused: nowPlaying?.paused, progressPaused: progress?.paused, position: currentPositionMs(),

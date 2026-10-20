@@ -21,6 +21,7 @@ function controller(t, name = "Synthetic iPad") {
     devices: null,
     duration: 600000,
     beforeRequest: null,
+    leavePauseStateStale: false,
   };
   app.window.testApi = async (url, options = {}) => {
     const request = { path: url.split("?")[0], url, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null };
@@ -40,7 +41,10 @@ function controller(t, name = "Synthetic iPad") {
       backend.state.is_playing = true;
       return null;
     }
-    if (request.path === "/me/player/pause") { backend.state.is_playing = false; return null; }
+    if (request.path === "/me/player/pause") {
+      if (!backend.leavePauseStateStale) backend.state.is_playing = false;
+      return null;
+    }
     if (request.path === "/me/player/seek") return null;
     throw new Error("Unexpected synthetic request");
   };
@@ -167,7 +171,7 @@ for (const [getLatency, pausedTile] of [[0, false], [3000, false], [7000, false]
     for (const duration of durationsBeforeRestart) {
       assert.ok(duration >= 500000 && duration < 590000, `Restart after ${duration}ms must leave network headroom`);
     }
-    assert.ok(checks < (pausedTile ? 450 : 160), "Renewal must not become a high-frequency polling loop");
+    assert.ok(checks < 60, "Renewal must not become a high-frequency polling loop");
     assert.equal(app.run("idleBlocked"), false);
     assert.equal(app.backend.requests.some(request => /repeat|queue|volume/.test(request.path)), false);
   });
@@ -234,8 +238,6 @@ test("idle silence reactivates the selected iPad and retries once after NO_ACTIV
     "GET /me/player/devices",
     "GET /me/player",
     "PUT /me/player",
-    "GET /me/player/devices",
-    "GET /me/player",
     "PUT /me/player/play",
   ]);
   assert.equal(app.backend.requests.some(request => /repeat|queue|volume/.test(request.path)), false);
@@ -345,10 +347,21 @@ test("Pause preserves the tile position while silence plays and Resume restores 
   const app = controller(t);
   app.tile();
   app.backend.state.is_playing = true;
+  app.backend.leavePauseStateStale = true;
+  app.run("idleReady = true");
   assert.equal(await app.run("pausePlayback()"), true);
   assert.equal(app.run("nowPlaying.paused"), true);
+  assert.equal(app.run("reconcileTimer"), null);
+  assert.notEqual(app.run("idleTimer"), null);
   const position = app.run("Math.round(currentPositionMs())");
   assert.equal(app.backend.state.item.id, SILENCE);
+  assert.deepEqual(app.backend.requests.map(request => `${request.method} ${request.path}`), [
+    "PUT /me/player/pause",
+    "GET /me/player/devices",
+    `GET /tracks/${SILENCE}`,
+    "GET /me/player",
+    "PUT /me/player/play",
+  ]);
   assert.equal(await app.run("reconcilePlayback()"), true);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
   assert.equal(app.run("Math.round(currentPositionMs())"), position);
@@ -358,12 +371,52 @@ test("Pause preserves the tile position while silence plays and Resume restores 
   assert.equal(app.run("idlePlayback"), null);
 });
 
+test("Pause handoff never replaces a different track that starts before silence", async t => {
+  const app = controller(t);
+  app.tile();
+  app.backend.state.is_playing = true;
+  app.backend.leavePauseStateStale = true;
+  app.backend.beforeRequest = async request => {
+    if (request.path === "/me/player" && request.method === "GET") {
+      app.backend.state.item = { id: "external-song", duration_ms: 240000 };
+    }
+  };
+
+  assert.equal(await app.run("pausePlayback()"), true);
+  assert.equal(app.run("nowPlaying.paused"), true);
+  assert.equal(app.plays().length, 0);
+  assert.equal(app.run("idlePlayback"), null);
+});
+
+test("disabling owned silence restores paused-song reconciliation", async t => {
+  const app = controller(t);
+  app.tile();
+  app.backend.state.is_playing = true;
+  app.run("idleReady = true");
+  assert.equal(await app.run("pausePlayback()"), true);
+  assert.equal(app.run("reconcileTimer"), null);
+
+  assert.equal(await app.run("setIdleEnabled(false)"), true);
+  assert.equal(app.run("idlePlayback"), null);
+  assert.notEqual(app.run("reconcileTimer"), null);
+});
+
 test("Stop clears the tile but starts silence; disabling then stops only that silence", async t => {
   const app = controller(t);
   app.tile();
+  app.backend.state.is_playing = true;
+  app.backend.leavePauseStateStale = true;
   assert.equal(await app.run("stopPlayback()"), true);
   assert.equal(app.run("nowPlaying"), null);
   assert.equal(app.backend.state.item.id, SILENCE);
+  assert.deepEqual(app.backend.requests.slice(0, 5).map(request => `${request.method} ${request.path}`), [
+    "PUT /me/player/pause",
+    "GET /me/player/devices",
+    `GET /tracks/${SILENCE}`,
+    "GET /me/player",
+    "PUT /me/player/play",
+  ]);
+  app.backend.leavePauseStateStale = false;
   assert.equal(await app.run("setIdleEnabled(false)"), true);
   assert.equal(app.backend.state.is_playing, false);
   assert.equal(app.window.localStorage.getItem("s9000.ipadKeepAlive"), "0");

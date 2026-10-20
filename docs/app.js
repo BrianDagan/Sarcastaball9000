@@ -2234,11 +2234,12 @@ let volumeFineThrottle = null;
 const PLAYBACK_STABILIZE_MS = 4000;
 const PLAYBACK_MISMATCH_CONFIRMATIONS = 2;
 const PLAYBACK_MISMATCH_MIN_INTERVAL_MS = 1000;
-const DEVICE_ACTIVATION_POLL_MS = 250;
-const DEVICE_ACTIVATION_POLLS = 6;
+const PLAYBACK_RECONCILE_MS = 5000;
+const PAUSED_PLAYBACK_RECONCILE_MS = 60000;
+const DEVICE_ACTIVATION_SETTLE_MS = 500;
 const IDLE_SILENCE_TRACK = "3mkOlbSv5RYadx0JsjTrKq";
 const IDLE_CHECK_MS = 30000;
-const IDLE_PLAYBACK_CHECK_MS = 15000;
+const IDLE_PLAYBACK_CHECK_MS = 60000;
 const IDLE_RENEW_BEFORE_MS = 60000;
 const IDLE_MIN_DURATION_MS = 30000;
 let idlePlayback = null;
@@ -2413,20 +2414,23 @@ async function loadIdleTrack(current) {
   return idleTrack;
 }
 
-function idleStatePermitsPlayback(state, device) {
+function idleStatePermitsPlayback(state, device, pausedTrackIds = null) {
   if (!state || !state.device?.id || typeof state.is_playing !== "boolean") {
     throw new Error("Spotify's current playback state is unavailable. Open Spotify on the selected iPad, then retry.");
   }
-  if (state.device.id !== device.id || !isIdleDevice(state.device) ||
-      (state.is_playing && !isSilenceState(state))) return false;
+  if (state.device.id !== device.id || !isIdleDevice(state.device)) return false;
+  const stalePausedTrack = state.is_playing && !isSilenceState(state) && pausedTrackIds?.size > 0 &&
+    [state.item?.id, state.item?.linked_from?.id].some(id => id && pausedTrackIds.has(id));
+  if (state.is_playing && !isSilenceState(state) && !stalePausedTrack) return false;
   if (state.repeat_state !== "off") {
     throw new Error("Turn Repeat off in Spotify before using idle silence; this app does not change Spotify's repeat setting.");
   }
   return true;
 }
 
-async function maintainIdlePlayback(current) {
+async function maintainIdlePlayback(current, expectedPausedTrackIds = []) {
   if (!idleForeground() || idleBlocked || (nowPlaying && !nowPlaying.paused)) return false;
+  const pausedTrackIds = new Set(expectedPausedTrackIds.filter(Boolean));
   const epoch = idleGeneration;
   const selectedId = activeDeviceId || localStorage.getItem(LS_DEVICE);
   const generation = authGeneration;
@@ -2449,25 +2453,37 @@ async function maintainIdlePlayback(current) {
       updateIdleControls();
       return false;
     }
-    let observedAt = performance.now();
-    let state = await api("/me/player", {}, live);
-    if (!live()) return false;
-    if (!idleStatePermitsPlayback(state, device)) {
-      idlePlayback = null;
-      updateIdleControls();
-      return false;
-    }
     activeDeviceId = device.id;
     activeDeviceCapabilities = device;
     updateVolumeControls();
     const hadMetadata = !!idleTrack;
-    const track = await loadIdleTrack(live);
-    if (!track || !live()) return false;
-    if (!hadMetadata) {
+    let observedAt;
+    let state;
+    let track;
+    if (pausedTrackIds.size) {
+      track = await loadIdleTrack(live);
+      if (!track || !live()) return false;
       observedAt = performance.now();
       state = await api("/me/player", {}, live);
       if (!live()) return false;
-      if (!idleStatePermitsPlayback(state, device)) return false;
+      if (!idleStatePermitsPlayback(state, device, pausedTrackIds)) return false;
+    } else {
+      observedAt = performance.now();
+      state = await api("/me/player", {}, live);
+      if (!live()) return false;
+      if (!idleStatePermitsPlayback(state, device)) {
+        idlePlayback = null;
+        updateIdleControls();
+        return false;
+      }
+      track = await loadIdleTrack(live);
+      if (!track || !live()) return false;
+      if (!hadMetadata) {
+        observedAt = performance.now();
+        state = await api("/me/player", {}, live);
+        if (!live()) return false;
+        if (!idleStatePermitsPlayback(state, device)) return false;
+      }
     }
     const duration = isSilenceState(state) && Number.isFinite(state.item?.duration_ms) && state.item.duration_ms > IDLE_MIN_DURATION_MS
       ? state.item.duration_ms : track.durationMs;
@@ -2489,7 +2505,7 @@ async function maintainIdlePlayback(current) {
         uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0,
       }, live, async (active, current) => {
         const recoveredState = await api("/me/player", {}, current);
-        return current() && idleStatePermitsPlayback(recoveredState, active);
+        return current() && idleStatePermitsPlayback(recoveredState, active, pausedTrackIds);
       });
       if (!started) return false;
     } finally {
@@ -2504,9 +2520,9 @@ async function maintainIdlePlayback(current) {
   });
 }
 
-async function tryIdlePlayback(current) {
+async function tryIdlePlayback(current, expectedPausedTrackIds = []) {
   const epoch = idleGeneration;
-  try { return await maintainIdlePlayback(current); }
+  try { return await maintainIdlePlayback(current, expectedPausedTrackIds); }
   catch (error) {
     if (current() && epoch === idleGeneration && idleForeground()) reportIdleFailure(error);
     return false;
@@ -2547,7 +2563,10 @@ async function setIdleEnabled(enabled) {
     if (state?.device?.id === owned.deviceId && isSilenceState(state) && state.is_playing) {
       await api(`/me/player/pause?device_id=${encodeURIComponent(owned.deviceId)}`, { method: "PUT" }, current);
     }
-    if (current()) clearIdlePlayback();
+    if (current()) {
+      clearIdlePlayback();
+      scheduleReconciliation();
+    }
   }, () => setIdleEnabled(false));
 }
 
@@ -2628,9 +2647,9 @@ async function buildTrackPlayRequest(trackId, positionMs, current) {
   return { ...context, body, usesContext: !!context.albumUri };
 }
 
-function waitForPlaybackDevice(current) {
+function waitForDeviceActivation(current) {
   return new Promise(resolve => {
-    setTimeout(() => resolve(current()), DEVICE_ACTIVATION_POLL_MS);
+    setTimeout(() => resolve(current()), DEVICE_ACTIVATION_SETTLE_MS);
   });
 }
 
@@ -2655,23 +2674,18 @@ async function refreshPlaybackDevice(deviceId, current) {
 }
 
 async function reactivatePlaybackDevice(deviceId, current, knownDevice = null) {
-  let device = knownDevice || await refreshPlaybackDevice(deviceId, current);
+  const device = knownDevice || await refreshPlaybackDevice(deviceId, current);
   if (!device || !current()) return null;
   await api("/me/player", {
     method: "PUT",
     body: JSON.stringify({ device_ids: [deviceId], play: false }),
   }, current);
   if (!current()) return null;
-  for (let attempt = 0; attempt < DEVICE_ACTIVATION_POLLS; attempt++) {
-    device = await refreshPlaybackDevice(deviceId, current);
-    if (!device || !current()) return null;
-    if (device.is_active) return device;
-    if (attempt + 1 < DEVICE_ACTIVATION_POLLS && !await waitForPlaybackDevice(current)) return null;
-  }
-  throw new Error("Spotify found the selected device but could not activate it. Open Spotify on that device once, then press Retry.");
+  if (!await waitForDeviceActivation(current)) return null;
+  return device;
 }
 
-async function playOnDevice(deviceId, body, current, permitRecovery = null) {
+async function playOnDevice(deviceId, body, current, permitRetry = null) {
   const play = () => api(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
     method: "PUT", ...(body ? { body: JSON.stringify(body) } : {}),
   }, current);
@@ -2682,10 +2696,9 @@ async function playOnDevice(deviceId, body, current, permitRecovery = null) {
     if (!(error instanceof SpotifyError) || error.status !== 404 || !current()) throw error;
     const device = await refreshPlaybackDevice(deviceId, current);
     if (!device || !current()) return false;
-    if (permitRecovery && !await permitRecovery(device, current)) return false;
+    if (permitRetry && !await permitRetry(device, current)) return false;
     const active = await reactivatePlaybackDevice(deviceId, current, device);
     if (!active || !current()) return false;
-    if (permitRecovery && !await permitRecovery(active, current)) return false;
     try {
       await play();
       return current();
@@ -2844,11 +2857,13 @@ function armStopDeadline() {
 
 function scheduleReconciliation() {
   clearTimeout(reconcileTimer);
-  if (nowPlaying && !erasingBrowser) {
+  reconcileTimer = null;
+  const idleOwnsPausedSong = !!idlePlayback && nowPlaying?.paused && idleResume?.uuid === nowPlaying.uuid;
+  if (nowPlaying && !erasingBrowser && !idleOwnsPausedSong) {
     reconcileTimer = setTimeout(async () => {
       if (document.visibilityState !== "hidden") await reconcilePlayback();
       scheduleReconciliation();
-    }, 5000);
+    }, nowPlaying.paused ? PAUSED_PLAYBACK_RECONCILE_MS : PLAYBACK_RECONCILE_MS);
   }
 }
 
@@ -3123,13 +3138,26 @@ function setPlaybackPaused(paused) {
   updatePauseBtn();
 }
 
+function currentLocalTrackIds() {
+  return Array.from(new Set([
+    playingSnapshot?.trackid,
+    playingSnapshot?.spotifyTrackId,
+    ...(playbackExpectation?.generation === transportGeneration ? playbackExpectation.trackIds : []),
+  ].filter(Boolean)));
+}
+
 async function pausePlayback() {
   return queueTransport("Pause", async current => {
     if (nowPlaying?.disallows?.pausing) throw new Error("Spotify currently disallows pausing this item.");
+    const pausedTrackIds = currentLocalTrackIds();
     await api("/me/player/pause", { method: "PUT" });
     if (!current()) return;
     setPlaybackPaused(true);
-    await tryIdlePlayback(current);
+    await tryIdlePlayback(current, pausedTrackIds);
+    if (current()) {
+      scheduleIdleCheck();
+      scheduleReconciliation();
+    }
   }, pausePlayback);
 }
 
@@ -3165,6 +3193,7 @@ async function resumePlayback() {
     }
     clearIdlePlayback(true);
     setPlaybackPaused(false);
+    scheduleReconciliation();
     rememberPlaybackExpectation(restore || {
       requestedTrackId: playingSnapshot.trackid,
       resolvedTrackId: playingSnapshot.spotifyTrackId,
@@ -3194,11 +3223,16 @@ function setBallSpin(on) {
 
 async function stopPlayback() {
   return queueTransport("Stop", async current => {
+    const pausedTrackIds = currentLocalTrackIds();
     await api("/me/player/pause", { method: "PUT" });
     if (!current()) return;
     clearIdlePlayback(true);
     setNowPlaying(null);
-    await tryIdlePlayback(current);
+    await tryIdlePlayback(current, pausedTrackIds);
+    if (current()) {
+      scheduleIdleCheck();
+      scheduleReconciliation();
+    }
   }, stopPlayback);
 }
 
