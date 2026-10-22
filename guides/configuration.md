@@ -291,8 +291,10 @@ Automatic idle playback requires all of the following:
 Automatic idle detection must not replace music that Spotify reports as already
 playing. When eligible, the app uses a normal Spotify play command for the
 [linked silent catalog track](https://open.spotify.com/track/3mkOlbSv5RYadx0JsjTrKq).
-That ID identifies public catalog content, not an account or device. It is not
-added as a SQLite library tile; library data, playback flags and stored
+That ID identifies public catalog content, not an account or device. Metadata is
+resolved in the signed-in account's market; if Spotify relinks the item, playback
+uses the returned playable URI rather than the unavailable original. The track
+is not added as a SQLite library tile; library data, playback flags and stored
 volume/fade values are preserved. Idle playback sends no volume/fade commands.
 
 ### Pause, Stop, Resume and opting out

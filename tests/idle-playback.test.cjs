@@ -20,6 +20,7 @@ function controller(t, name = "Synthetic iPad") {
     requests: [],
     devices: null,
     duration: 600000,
+    silence: { id: SILENCE, uri: `spotify:track:${SILENCE}` },
     beforeRequest: null,
     leavePauseStateStale: false,
   };
@@ -31,11 +32,18 @@ function controller(t, name = "Synthetic iPad") {
     if (request.path === "/me/player" && request.method === "GET") {
       return structuredClone({ ...backend.state, device: backend.device });
     }
-    if (request.path === `/tracks/${SILENCE}`) return { id: SILENCE, duration_ms: backend.duration, is_playable: true };
+    if (request.path === `/tracks/${SILENCE}`) {
+      return { ...backend.silence, duration_ms: backend.duration, is_playable: true };
+    }
     if (request.path === "/me/player/play") {
       if (request.body?.uris) {
         const id = request.body.uris[0].split(":").at(-1);
-        backend.state.item = { id, duration_ms: id === SILENCE ? backend.duration : 180000 };
+        const silence = id === backend.silence.id || id === SILENCE;
+        backend.state.item = {
+          id,
+          duration_ms: silence ? backend.duration : 180000,
+          ...(silence && backend.silence.linked_from ? { linked_from: backend.silence.linked_from } : {}),
+        };
         backend.state.progress_ms = request.body.position_ms || 0;
       }
       backend.state.is_playing = true;
@@ -188,6 +196,31 @@ test("default idle behavior starts only on a freshly available selected iPad dev
   assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("hidden"), false);
   assert.equal(app.run("pendingCount()"), 0);
   assert.equal(app.backend.requests.some(request => /volume|repeat/.test(request.path)), false);
+});
+
+test("idle silence plays Spotify's market-relinked URI instead of the unavailable original", async t => {
+  const app = controller(t);
+  const resolved = "synthetic-market-silence";
+  app.backend.silence = {
+    id: resolved,
+    uri: `spotify:track:${resolved}`,
+    linked_from: { id: SILENCE },
+  };
+
+  assert.equal(await app.run("checkIdlePlayback()"), true);
+  const metadata = app.backend.requests.find(request => request.path === `/tracks/${SILENCE}`);
+  assert.match(metadata.url, /market=from_token/);
+  assert.deepEqual(app.plays()[0].body, {
+    uris: [`spotify:track:${resolved}`],
+    position_ms: 0,
+  });
+  assert.equal(app.run("idleTrack.id"), resolved);
+  assert.equal(app.run("idlePlayback.deviceId"), "synthetic-device");
+  await app.run("playbackDiagnosticPersistQueue");
+  assert.equal(app.run(`
+    playbackDiagnosticBuffer.some(entry =>
+      entry.event === "idle-track-metadata" && entry.relinked === true)
+  `), true);
 });
 
 test("idle silence reactivates the selected iPad and retries once after NO_ACTIVE_DEVICE", async t => {

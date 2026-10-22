@@ -45,6 +45,7 @@ async function prepare(page, options = {}) {
   const backend = page.idleBackend = {
     devices,
     durationMs: options.durationMs || 93750,
+    silenceId: options.silenceId || SILENCE_ID,
     playable: options.playable !== false,
     failSilence: false,
     failNextPlayNoActive: options.failNextPlayNoActive === true,
@@ -79,7 +80,13 @@ async function prepare(page, options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
-    const call = { method, path: url.pathname, deviceId: url.searchParams.get("device_id"), body: null };
+    const call = {
+      method,
+      path: url.pathname,
+      deviceId: url.searchParams.get("device_id"),
+      market: url.searchParams.get("market"),
+      body: null,
+    };
     if (request.postData() && url.hostname === "api.spotify.com") call.body = request.postDataJSON();
     backend.calls.push(call);
     if (url.hostname === "accounts.spotify.com" && url.pathname === "/api/token" &&
@@ -104,7 +111,9 @@ async function prepare(page, options = {}) {
       }
       if (method === "GET" && url.pathname === `/v1/tracks/${SILENCE_ID}`) {
         return route.fulfill({ json: {
-          ...track(SILENCE_ID, backend.durationMs), is_playable: backend.playable,
+          ...track(backend.silenceId, backend.durationMs),
+          ...(backend.silenceId === SILENCE_ID ? {} : { linked_from: { id: SILENCE_ID } }),
+          is_playable: backend.playable,
           ...(backend.playable ? {} : { restrictions: { reason: "market" } }),
         } });
       }
@@ -130,13 +139,17 @@ async function prepare(page, options = {}) {
         }
         const uri = call.body?.uris?.[0] || call.body?.offset?.uri;
         const id = uri?.replace("spotify:track:", "") || backend.state.item?.id;
-        if (id === SILENCE_ID && backend.failSilence) {
+        if (id === backend.silenceId && backend.failSilence) {
           return route.fulfill({ status: 503, json: { error: { status: 503, message: "Synthetic failure" } } });
         }
-        if (id === SILENCE_ID && backend.acknowledgeSilenceWithoutPlayback) {
+        if (id === backend.silenceId && backend.acknowledgeSilenceWithoutPlayback) {
           return route.fulfill({ status: 204 });
         }
-        backend.state.item = track(id, id === SILENCE_ID ? backend.durationMs : 123456);
+        backend.state.item = {
+          ...track(id, id === backend.silenceId ? backend.durationMs : 123456),
+          ...(id === backend.silenceId && backend.silenceId !== SILENCE_ID
+            ? { linked_from: { id: SILENCE_ID } } : {}),
+        };
         backend.state.is_playing = true;
         if (Number.isFinite(call.body?.position_ms)) backend.state.progress_ms = call.body.position_ms;
         backend.state.device = { ...(backend.devices.find(item => item.id === call.deviceId) || backend.state.device) };
@@ -313,6 +326,18 @@ test("a saved iPad selection starts known silence automatically with the default
   await expect(guidance).toContainText(/queue/i);
   await expect(guidance).toContainText(/clos|hid|background/i);
   await expect(guidance).toContainText(/not necessarily|not guaranteed|cannot guarantee|can't guarantee/i);
+});
+
+test("idle silence follows Spotify's market-relinked track URI", async ({ page }) => {
+  const resolved = "synthetic-market-silence";
+  const resolvedUri = `spotify:track:${resolved}`;
+  const backend = await prepare(page, { silenceId: resolved });
+  await expect.poll(() => plays(backend, resolvedUri).length).toBe(1);
+  expect(plays(backend, SILENCE_URI)).toEqual([]);
+  const metadata = backend.calls.find(call =>
+    call.method === "GET" && call.path === `/v1/tracks/${SILENCE_ID}`);
+  expect(metadata.market).toBe("from_token");
+  await expectIdleStatus(page);
 });
 
 test("Settings downloads a sanitized playback diagnostic JSON file", async ({ page }) => {

@@ -2282,12 +2282,12 @@ const PLAYBACK_DIAGNOSTIC_FIELDS = new Set([
   "controller", "visibility", "attempt", "status", "elapsedMs", "progressSec", "durationSec",
   "keepAlive", "online", "standalone", "hasAuth", "selectedDeviceStored", "devicePresent",
   "deviceEligible", "deviceActive", "deviceRestricted", "stateAvailable", "stateDeviceMatches",
-  "isPlaying", "isSilence", "recovered",
+  "isPlaying", "isSilence", "recovered", "relinked",
 ]);
 const PLAYBACK_DIAGNOSTIC_BOOLEAN_FIELDS = new Set([
   "keepAlive", "online", "standalone", "hasAuth", "selectedDeviceStored", "devicePresent",
   "deviceEligible", "deviceActive", "deviceRestricted", "stateAvailable", "stateDeviceMatches",
-  "isPlaying", "isSilence", "recovered",
+  "isPlaying", "isSilence", "recovered", "relinked",
 ]);
 const PLAYBACK_DIAGNOSTIC_NUMBER_FIELDS = new Set([
   "attempt", "status", "elapsedMs", "progressSec", "durationSec",
@@ -2295,8 +2295,8 @@ const PLAYBACK_DIAGNOSTIC_NUMBER_FIELDS = new Set([
 const PLAYBACK_DIAGNOSTIC_EVENTS = new Set([
   "app-start", "device-refresh", "device-transfer", "idle-already-running", "idle-blocked",
   "idle-check-start", "idle-confirmation", "idle-device", "idle-failed", "idle-recovery-skipped",
-  "idle-state-read", "keep-awake-changed", "page-lifecycle", "play-acknowledged", "play-failed",
-  "play-request", "transport-intent", "visibility-changed",
+  "idle-state-read", "idle-track-metadata", "keep-awake-changed", "page-lifecycle",
+  "play-acknowledged", "play-failed", "play-request", "transport-intent", "visibility-changed",
 ]);
 const PLAYBACK_DIAGNOSTIC_VALUES = {
   source: new Set(["pause", "stop", "scheduled", "start", "resume"]),
@@ -2641,21 +2641,32 @@ function scheduleIdleCheck(delay = idlePlayback ? IDLE_PLAYBACK_CHECK_MS : IDLE_
 }
 
 function isSilenceState(state) {
-  return state?.item?.id === IDLE_SILENCE_TRACK || state?.item?.linked_from?.id === IDLE_SILENCE_TRACK ||
-    (idleTrack && state?.item?.id === idleTrack.id);
+  const ids = [state?.item?.id, state?.item?.linked_from?.id].filter(Boolean);
+  return ids.includes(IDLE_SILENCE_TRACK) || (!!idleTrack && ids.includes(idleTrack.id));
 }
 
 async function loadIdleTrack(current) {
   if (idleTrack) return idleTrack;
-  const track = await api(`/tracks/${IDLE_SILENCE_TRACK}`, {}, current);
+  const track = await api(`/tracks/${IDLE_SILENCE_TRACK}?market=from_token`, {}, current);
   if (!current()) return null;
-  if (typeof track?.id !== "string" || !track.id ||
-      (track.id !== IDLE_SILENCE_TRACK && track.linked_from?.id !== IDLE_SILENCE_TRACK) ||
+  const returnedUri = spotifyUri(track?.uri, "track");
+  const resolvedId = typeof track?.id === "string" && track.id
+    ? track.id
+    : returnedUri?.split(":").at(-1);
+  if (!resolvedId ||
+      (resolvedId !== IDLE_SILENCE_TRACK && track?.linked_from?.id !== IDLE_SILENCE_TRACK) ||
       track?.is_playable === false || !Number.isFinite(track?.duration_ms) ||
       track.duration_ms <= IDLE_MIN_DURATION_MS) {
     throw new Error("The selected silence track is unavailable or its duration cannot be verified.");
   }
-  idleTrack = { id: track.id, durationMs: track.duration_ms };
+  idleTrack = {
+    id: resolvedId,
+    uri: returnedUri || `spotify:track:${resolvedId}`,
+    durationMs: track.duration_ms,
+  };
+  recordPlaybackDiagnostic("idle-track-metadata", {
+    relinked: resolvedId !== IDLE_SILENCE_TRACK,
+  });
   return idleTrack;
 }
 
@@ -2810,7 +2821,7 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
     const requestedAt = performance.now();
     try {
       const started = await playOnDevice(device.id, {
-        uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0,
+        uris: [track.uri], position_ms: 0,
       }, live, async (active, current) => {
         const recoveredState = await api("/me/player", {}, current);
         recordPlaybackDiagnostic("idle-state-read", {
@@ -2847,7 +2858,7 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
         try {
           await api(`/me/player/play?device_id=${encodeURIComponent(device.id)}`, {
             method: "PUT",
-            body: JSON.stringify({ uris: [`spotify:track:${IDLE_SILENCE_TRACK}`], position_ms: 0 }),
+            body: JSON.stringify({ uris: [track.uri], position_ms: 0 }),
           }, live);
           if (live()) recordPlaybackDiagnostic("play-acknowledged", {
             purpose: "silence", attempt: 2, requestMode: "direct", recovered: true,
