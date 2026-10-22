@@ -91,6 +91,31 @@ test("same-origin reloads restore a saved session and library without a new OAut
   expect(backend.codeExchanges).toBe(0);
 });
 
+test("force refresh reopens current assets while preserving sign-in, library and edits", async ({ page }) => {
+  const backend = await prepareStoredApp(page);
+  const runtimeRequests = [];
+  page.on("request", request => {
+    const url = new URL(request.url());
+    if (url.origin === new URL(page.url()).origin) runtimeRequests.push(url.pathname);
+  });
+
+  await page.locator("#btn-settings").click();
+  const navigated = page.waitForEvent("framenavigated");
+  await page.locator("#btn-force-refresh-app").click();
+  await navigated;
+  await expectStoredData(page);
+  await expect.poll(() => new URL(page.url()).searchParams.has("_s9000_refresh")).toBe(false);
+  for (const path of [
+    "/index.html",
+    "/app.js",
+    "/styles.css",
+    "/assets/baseball.svg",
+    "/vendor/sql-wasm.js",
+    "/vendor/sql-wasm.wasm",
+  ]) expect(runtimeRequests).toContain(path);
+  expect(backend.codeExchanges).toBe(0);
+});
+
 test("a rejected legacy callback preserves an established sign-in, preferences and library", async ({ page }) => {
   const backend = await prepareStoredApp(page);
   await page.evaluate(() => {

@@ -1,5 +1,6 @@
 const { test, expect } = require("@playwright/test");
 const { getSql, fixture, ids } = require("../helpers/database.cjs");
+const { buttonContrast } = require("../helpers/contrast.cjs");
 
 const track = index => ({
   type: "track", id: `synthetic-bulk-${index}`, name: `Synthetic song ${index}`,
@@ -100,6 +101,39 @@ async function holdSecondPage(page) {
   };
   return { entered, release };
 }
+
+test("playlist titles and details remain readable in every enabled button state", async ({ page }) => {
+  await page.locator("#btn-add-song").click();
+  await page.locator("#add-mode-playlist").click();
+  const row = page.locator("#add-playlist-results .search-row").first();
+  const title = row.locator(".search-main");
+  const details = row.locator(".search-sub");
+  await expect(title).toHaveText("Synthetic playlist");
+
+  for (const state of ["normal", "hover", "focus", "pressed"]) {
+    if (state === "hover") await row.hover();
+    if (state === "focus") {
+      await page.mouse.move(0, 0);
+      await row.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      await expect(row).toBeFocused();
+    }
+    if (state === "pressed") {
+      await row.hover();
+      await page.mouse.down();
+    }
+    try {
+      for (const text of [title, details]) {
+        const contrast = await buttonContrast(text);
+        expect(contrast.ratio).toBeGreaterThanOrEqual(4.5);
+        expect(contrast.opacity).toBe("1");
+      }
+    } finally {
+      if (state === "pressed") await page.mouse.up();
+    }
+  }
+});
 
 test("Add all imports the complete playlist once and normal Save exports the appended rows", async ({ page }) => {
   await openPlaylist(page);

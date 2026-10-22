@@ -184,6 +184,8 @@ test("default idle behavior starts only on a freshly available selected iPad dev
   assert.deepEqual(app.plays()[0].body, { uris: [`spotify:track:${SILENCE}`], position_ms: 0 });
   assert.match(app.plays()[0].url, /device_id=synthetic-device/);
   assert.equal(app.run("nowPlaying"), null);
+  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("spinning"), true);
+  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("hidden"), false);
   assert.equal(app.run("pendingCount()"), 0);
   assert.equal(app.backend.requests.some(request => /volume|repeat/.test(request.path)), false);
 });
@@ -239,6 +241,7 @@ test("idle silence reactivates the selected iPad and retries once after NO_ACTIV
     "GET /me/player",
     "PUT /me/player",
     "PUT /me/player/play",
+    "GET /me/player",
   ]);
   assert.equal(app.backend.requests.some(request => /repeat|queue|volume/.test(request.path)), false);
 });
@@ -361,6 +364,7 @@ test("Pause preserves the tile position while silence plays and Resume restores 
     `GET /tracks/${SILENCE}`,
     "GET /me/player",
     "PUT /me/player/play",
+    "GET /me/player",
   ]);
   assert.equal(await app.run("reconcilePlayback()"), true);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
@@ -369,6 +373,40 @@ test("Pause preserves the tile position while silence plays and Resume restores 
   assert.deepEqual(app.plays().at(-1).body, { uris: ["spotify:track:synthetic-song"], position_ms: position });
   assert.equal(app.run("nowPlaying.paused"), false);
   assert.equal(app.run("idlePlayback"), null);
+});
+
+test("an acknowledged silence command cannot spin the ball until Spotify confirms playback", async t => {
+  const app = controller(t);
+  app.tile();
+  app.backend.state.is_playing = true;
+  app.backend.leavePauseStateStale = true;
+  app.run("idleReady = true");
+  const regularApi = app.window.testApi;
+  app.window.testApi = async (url, options = {}, current) => {
+    const path = url.split("?")[0];
+    if (path === "/me/player/play" || (path === "/me/player" && options.method === "PUT")) {
+      app.backend.requests.push({
+        path,
+        url,
+        method: options.method || "GET",
+        body: options.body ? JSON.parse(options.body) : null,
+      });
+      return null;
+    }
+    return regularApi(url, options, current);
+  };
+
+  assert.equal(await app.run("pausePlayback()"), true);
+  await app.run("playbackDiagnosticPersistQueue");
+  assert.equal(app.plays().length, 2, "A success-shaped no-op gets only one bounded transfer and retry");
+  assert.equal(app.backend.requests.filter(request =>
+    request.path === "/me/player" && request.method === "GET").length, 3);
+  assert.equal(app.backend.requests.length, 10);
+  assert.equal(app.run("idlePlayback"), null);
+  assert.match(app.run("idleFailure"), /acknowledged two silence requests/);
+  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("spinning"), false);
+  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("hidden"), true);
+  assert.equal(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'idle-confirmation' && entry.outcome === 'unconfirmed').length"), 2);
 });
 
 test("Pause handoff never replaces a different track that starts before silence", async t => {
@@ -493,7 +531,9 @@ test("the next check is pulled forward to the renewal deadline instead of anothe
   const app = controller(t);
   const clock = installIdleClock(app);
   app.run("idleReady = true");
-  await app.run("checkIdlePlayback()");
+  const initial = app.run("checkIdlePlayback()");
+  await clock.advance(1000);
+  await initial;
   app.backend.state.progress_ms = app.backend.duration - 66000;
   await app.run("checkIdlePlayback()");
   assert.equal(app.run("idleNextCheckAt"), clock.now + 6000);
@@ -514,10 +554,13 @@ test("a short silence track uses proportional headroom rather than restarting im
 test("time spent waiting for a playback response is included in the renewal decision", async t => {
   const app = controller(t);
   const clock = installIdleClock(app);
+  app.run("waitForDeviceActivation = async current => current()");
   await app.run("checkIdlePlayback()");
   const realApi = app.window.testApi;
+  let delayNextState = true;
   app.window.testApi = async (url, options) => {
-    if (url === "/me/player") {
+    if (url === "/me/player" && delayNextState) {
+      delayNextState = false;
       const snapshot = structuredClone({ ...app.backend.state, device: app.backend.device });
       await clock.wait(12000);
       return snapshot;
@@ -534,6 +577,7 @@ test("time spent waiting for a playback response is included in the renewal deci
 test("a delayed pre-renewal reconciliation cannot overwrite the new silence deadline", async t => {
   const app = controller(t);
   const clock = installIdleClock(app);
+  app.run("waitForDeviceActivation = async current => current()");
   app.tile();
   await app.run("pausePlayback()");
   app.backend.state.progress_ms = app.backend.duration - 1000;
@@ -671,6 +715,30 @@ test("disabling during an already-sent silence start queues a confirmed pause af
   await entered.promise;
   const disabling = app.run("setIdleEnabled(false)");
   release.resolve();
+  await check;
+  assert.equal(await disabling, true);
+  assert.equal(app.backend.state.is_playing, false);
+  assert.equal(app.backend.requests.at(-1).path, "/me/player/pause");
+});
+
+test("disabling after a silence acknowledgement still owns the pending confirmation", async t => {
+  const app = controller(t);
+  const confirmation = deferred();
+  app.window.testConfirmation = confirmation.promise;
+  app.run(`
+    waitForDeviceActivation = async current => {
+      await window.testConfirmation;
+      return current();
+    };
+  `);
+  const check = app.run("checkIdlePlayback()");
+  for (let attempts = 0; attempts < 20 && app.plays().length === 0; attempts++) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(app.plays().length, 1);
+  assert.equal(app.run("idlePendingDevice.deviceId"), "synthetic-device");
+  const disabling = app.run("setIdleEnabled(false)");
+  confirmation.resolve();
   await check;
   assert.equal(await disabling, true);
   assert.equal(app.backend.state.is_playing, false);

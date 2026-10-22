@@ -829,8 +829,14 @@ body.vol-open #grid { padding-right: 64px; }
 .search-row {
   padding: 10px; border: 1px solid var(--border); border-radius: 8px;
   margin: 6px 0; cursor: pointer;
+  appearance: none; -webkit-appearance: none;
+  background: var(--surface); color: var(--text);
 }
-.search-row:hover { border-color: var(--accent); background: var(--surface-2); }
+.search-row:hover,
+.search-row:focus-visible {
+  border-color: var(--accent); background: var(--surface-2); color: var(--text);
+}
+.search-row:active { background: var(--bg); color: var(--text); }
 .search-row.disabled { opacity: 0.5; cursor: default; }
 .search-row .search-main { font-weight: 600; color: var(--text); }
 .search-row .search-sub { font-size: 12px; color: var(--text-dim); margin-top: 2px; }

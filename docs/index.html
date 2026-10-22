@@ -228,11 +228,21 @@
           <input id="in-fade-out" type="range" min="0" max="10" step="1" value="2" class="full-width" />
         </label>
         <p class="hint">Fade-out runs near the end cue. Spotify network commands and browser scheduling are best-effort: exact silence timing and background-tab stops are not guaranteed. A tile's own fade value overrides these defaults.</p>
+        <button id="btn-download-playback-diagnostics" type="button" class="secondary">Download playback diagnostics</button>
+        <p class="hint">After a playback or keep-awake failure, leave this app open and download this generated JSON file. It contains recent sanitized intent, timing and Spotify status categories only. It excludes credentials, Client IDs, account/device/track identifiers and names, database contents, browser-storage dumps and raw Spotify responses.</p>
+        <div id="playback-diagnostics-status" class="status" role="status"></div>
       </section>
 
       <section>
         <h3>Display</h3>
         <button id="btn-fullscreen-help" type="button" class="secondary">Home Screen and full screen help</button>
+      </section>
+
+      <section>
+        <h3>App updates</h3>
+        <button id="btn-force-refresh-app" type="button" class="secondary">Force refresh app</button>
+        <p class="hint">Downloads the current published Sarcastaball page, script, styles and local runtime assets, then reopens the app. It preserves this browser's Spotify sign-in, selected device, library recovery, unsaved edits and settings. It cannot install changes that have not been published yet.</p>
+        <div id="app-refresh-status" class="status" role="status"></div>
       </section>
 
       <section>

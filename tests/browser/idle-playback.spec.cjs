@@ -1,4 +1,5 @@
 const { test, expect } = require("@playwright/test");
+const fs = require("node:fs/promises");
 const { getSql, fixture, ids } = require("../helpers/database.cjs");
 const { buttonContrast } = require("../helpers/contrast.cjs");
 
@@ -48,6 +49,7 @@ async function prepare(page, options = {}) {
     failSilence: false,
     failNextPlayNoActive: options.failNextPlayNoActive === true,
     failNextPlayWithoutReason: options.failNextPlayWithoutReason === true,
+    acknowledgeSilenceWithoutPlayback: false,
     leavePauseStateStale: false,
     calls: [],
     unexpected: [],
@@ -130,6 +132,9 @@ async function prepare(page, options = {}) {
         const id = uri?.replace("spotify:track:", "") || backend.state.item?.id;
         if (id === SILENCE_ID && backend.failSilence) {
           return route.fulfill({ status: 503, json: { error: { status: 503, message: "Synthetic failure" } } });
+        }
+        if (id === SILENCE_ID && backend.acknowledgeSilenceWithoutPlayback) {
+          return route.fulfill({ status: 204 });
         }
         backend.state.item = track(id, id === SILENCE_ID ? backend.durationMs : 123456);
         backend.state.is_playing = true;
@@ -308,6 +313,37 @@ test("a saved iPad selection starts known silence automatically with the default
   await expect(guidance).toContainText(/queue/i);
   await expect(guidance).toContainText(/clos|hid|background/i);
   await expect(guidance).toContainText(/not necessarily|not guaranteed|cannot guarantee|can't guarantee/i);
+});
+
+test("Settings downloads a sanitized playback diagnostic JSON file", async ({ page }) => {
+  await prepare(page);
+  await expectIdleStatus(page);
+  await page.locator("#btn-settings").click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download playback diagnostics" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^Sarcastaball-playback-diagnostics-\d{8}T\d{6}Z\.json$/);
+  const reportText = await fs.readFile(await download.path(), "utf8");
+  const report = JSON.parse(reportText);
+  expect(report.format).toBe("sarcastaball-playback-diagnostics");
+  expect(report.runtime).toMatchObject({
+    hasAuth: true,
+    selectedDeviceStored: true,
+    persistenceComplete: true,
+  });
+  expect(report.events.length).toBeGreaterThan(0);
+  for (const privateValue of [
+    "synthetic-idle-client",
+    "synthetic-idle-refresh",
+    "synthetic-idle-access",
+    DEVICE_ID,
+    "Synthetic iPad",
+    SILENCE_ID,
+    "Synthetic listener",
+    SONG_ID,
+  ]) {
+    expect(reportText).not.toContain(privateValue);
+  }
 });
 
 test("coffee-cup idle silence recovers from a reasonless 404 and stale active flag", async ({ page }) => {
@@ -740,6 +776,36 @@ test("failed silence leaves the song paused and data intact, with explicit Retry
   await expect(status.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => nowPlaying?.paused && progress?.paused)).toBe(true);
   expect(await librarySnapshot(page)).toEqual(before);
+});
+
+test("a success-shaped silence no-op cannot spin the ball or poll Spotify repeatedly", async ({ page }) => {
+  const backend = await prepare(page, { keepAlive: false, trackPlayed: false });
+  await loadLibrary(page);
+  await startSong(page);
+  await setKeepAlive(page, true);
+  await idlePass(page);
+  backend.acknowledgeSilenceWithoutPlayback = true;
+  backend.leavePauseStateStale = true;
+  const handoffStart = backend.calls.length;
+
+  await page.locator("#np-pause").click();
+  const status = page.locator("#ipad-keepalive-status");
+  await expect(status).toBeVisible();
+  await expect(status).toContainText(/acknowledged two silence requests|not confirmed/i);
+  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "on");
+  await expect(page.locator("#keepalive-ball")).toBeHidden();
+  await expect.poll(() => plays(backend, SILENCE_URI).length).toBe(2);
+
+  const handoff = backend.calls.slice(handoffStart);
+  expect(handoff.filter(call => call.method === "GET" && call.path === "/v1/me/player")).toHaveLength(3);
+  expect(handoff.filter(call => call.method === "GET" && call.path === "/v1/me/player/devices")).toHaveLength(2);
+  expect(handoff.filter(call => call.method === "PUT" && call.path === "/v1/me/player")).toHaveLength(1);
+  expect(handoff.filter(call => call.method === "PUT" && call.path === "/v1/me/player/play")).toHaveLength(2);
+  expect(handoff).toHaveLength(10);
+
+  await page.locator("#btn-settings").click();
+  await expect(page.getByRole("button", { name: "Download playback diagnostics" })).toBeVisible();
+  await expect(page.locator("#modal")).toContainText(/excludes credentials/i);
 });
 
 for (const repeatState of ["track", "context", null]) {

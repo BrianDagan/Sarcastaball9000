@@ -261,9 +261,12 @@ origin under `s9000.ipadKeepAlive` (`0` means off); uncheck it to opt out.
 The same switch is available in the top icon bar and stays synchronized with
 Settings. Its fixed-size icon shows **coffee** when enabled and waiting,
 a **sleeping face** when off, and a **muted spinning baseball** while idle silence
-is running. Reduced motion disables the animation without changing the reported
-state. Normal activity no longer adds a banner or shifts the grid; genuine
-keep-awake errors still display their explanation and Retry action.
+is confirmed playing on the selected iPad. A successful Spotify command response
+alone does not start the ball: after a short fixed settling delay, one fresh
+playback-state read must report the silence track, the selected device and
+`is_playing: true`. Reduced motion disables the animation without changing the
+reported state. Normal activity no longer adds a banner or shifts the grid;
+genuine keep-awake errors still display their explanation and Retry action.
 
 A reported iPad trial lost control after about two minutes paused, while
 continuous playback of a silent Spotify track kept it reachable beyond two
@@ -308,7 +311,11 @@ the app starts silence even if the next fresh state response still reports the
 same just-paused song as playing. A different track or device still blocks the
 handoff so automatic silence cannot replace unrelated music. The first handoff
 uses one fresh device-list read and one fresh playback-state read after silence
-metadata is available; it does not loop on status.
+metadata is available, then one post-command confirmation read. If Spotify
+acknowledges the command but does not report silence playing, the app may perform
+one device refresh, one non-playing transfer, one retry and one final confirmation
+only when the observed state is still safe. It never polls activation in a loop
+or retries over different playback.
 
 Automatic idle playback also preserves a locally paused tile. It can, however,
 replace the Spotify playback context of a song paused outside DJDad. DJDad
@@ -421,6 +428,14 @@ have separate storage: keep a database export and sign in/import there if needed
 This does not erase the current browser's data. Fullscreen/Home Screen mode does
 not guarantee background execution, offline Spotify control or exact cue timing.
 
+Setup's **App updates -> Force refresh app** first saves a fresh recovery record,
+downloads the current published HTML, JavaScript, CSS, baseball and paired sql.js
+runtime files with cache revalidation, then reopens the same app. It preserves
+the browser's sign-in, selected device, library, pending edits and settings. If
+recovery cannot be saved or any required file cannot be retrieved, it stays on
+the current page and reports the failure without clearing data. The action can
+only retrieve changes that have already been published.
+
 References:
 [Apple's Home Screen guidance](https://support.apple.com/guide/iphone/bookmark-a-website-iph42ab2f3a7/ios),
 [Chrome's web-app guidance](https://support.google.com/chrome/answer/9658361),
@@ -510,7 +525,9 @@ Spotify mixing/overlap or public/business-playback software.
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
 | No active device / Spotify 404 | Sarcastaball makes one device-list check, one transfer with a short settling delay, and one playback retry when Spotify still lists the selected device, including when Spotify omits the inactive-device reason or reports a stale active flag. It does not rapidly poll activation status. If the device is missing or recovery fails, open Spotify there once, return, refresh/reselect if needed, and Retry. Unavailable track/context content still fails after the bounded retry. |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
-| iPad keep-awake unavailable/failed | Check the selected name contains `iPad`, device presence/restrictions, valid authorization and repeat Off; keep the page visible and Retry after resolving the reported cause, without logout/reset |
+| iPad keep-awake unavailable/failed | Check the selected name contains `iPad`, device presence/restrictions, valid authorization and repeat Off; keep the page visible and Retry after resolving the reported cause, without logout/reset. The baseball spins only after Spotify confirms silence is playing. |
+| Coffee is on but silence does not play | Leave the page open after the failure. Open **Settings -> Playback -> Download playback diagnostics** before reloading, then share only that generated JSON file through the agreed reporting channel. It contains a bounded recent history of sanitized intent, timing, device/state booleans and allowlisted Spotify status categories; it excludes credentials, Client IDs, account/device/track identifiers and names, database contents and raw Spotify responses. |
+| Home Screen app appears stale | After downloading playback diagnostics if needed, use **Settings -> App updates -> Force refresh app**. It retrieves only the current published version and preserves browser data; unpublished changes cannot appear until deployment. |
 | Spotify keeps playing after Stop | With eligible keep-awake enabled, Stop clears the tile but leaves silent playback running; disable the setting and confirm Spotify pauses, or stop directly in Spotify |
 | Import rejected | Preserve the original; schema or integrity may be unsupported |
 | File grayed out in the picker | Refresh to load the unfiltered chooser; if it remains unavailable, download a local copy through your file manager/provider. Do not rename or reset app data to bypass this. |
@@ -520,8 +537,9 @@ Spotify mixing/overlap or public/business-playback software.
 | WASM unavailable | Serve `docs` over HTTP/HTTPS with the paired vendor assets present |
 | Unconfirmed Stop/seek/fade | Check Spotify directly; use device controls |
 
-Use [safe reporting guidance](../SECURITY.md), not personal databases, storage
-dumps or unreviewed network logs, when requesting help.
+Use [safe reporting guidance](../SECURITY.md). The app-generated playback
+diagnostic JSON is the only approved log attachment; do not substitute personal
+databases, storage dumps, HAR files or unreviewed console/network logs.
 
 ## Moving to a hosted origin
 
