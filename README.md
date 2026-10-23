@@ -88,10 +88,11 @@ browser requirements and troubleshooting.
 - **Keep iPad Spotify awake** is enabled by default for selected Spotify devices
   whose names contain `iPad`. While visible, idle time, Pause and Stop use a silent
   track instead of leaving Spotify paused; Resume restores the paused tile.
-  A small baseball in the top-right latency display marks confirmed idle playback;
-  the former coffee-cup toolbar switch is gone. The persistent troubleshooting
-  opt-out remains under **Settings -> Awake** for deliberately restoring normal
-  Pause/Stop behavior. If Spotify drops the selected iPad, a user-tapped
+  The top-right latency display uses a play icon for active song playback and a
+  small spinning baseball for confirmed idle playback; the former coffee-cup
+  toolbar switch is gone. The persistent troubleshooting opt-out remains under
+  **Settings -> Awake** for deliberately restoring normal Pause/Stop behavior.
+  If Spotify drops the selected iPad, a user-tapped
   **Open Spotify to wake iPad** action opens the public silence track; Spotify
   may require a manual Play tap and manual return before Sarcastaball performs
   one fresh recovery check. The app cannot auto-launch Spotify, force autoplay

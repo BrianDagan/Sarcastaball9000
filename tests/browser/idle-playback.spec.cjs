@@ -263,6 +263,8 @@ async function startSong(page) {
   await expect(page.locator("#grid .cell").first()).toHaveClass(/playing/);
   await expect.poll(() => page.evaluate(() => nowPlaying?.paused)).toBe(false);
   await page.evaluate(() => transportQueue);
+  await expect(page.locator("#song-playing-indicator")).toBeVisible();
+  await expect(page.locator("#idle-playing-indicator")).toBeHidden();
 }
 
 async function deviceChoice(page, selected) {
@@ -318,6 +320,7 @@ async function librarySnapshot(page) {
 
 async function expectIdleStatus(page) {
   await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "running");
+  await expect(page.locator("#song-playing-indicator")).toBeHidden();
   await expect(page.locator("#idle-playing-indicator")).toBeVisible();
   await expect(page.locator("#idle-state-text")).toHaveAttribute("role", "status");
   await expect(page.locator("#idle-state-text")).toContainText(/silence/i);

@@ -75,9 +75,12 @@
         💾<span id="save-badge" class="badge">0</span>
       </button>
       <button id="btn-refresh-db" class="icon-btn" title="Reload database file from disk">🔄</button>
-      <span id="latency-pill" class="pill" data-idle-state="waiting" title="Round-trip time to Spotify API for the last play command">
+      <span id="latency-pill" class="pill" data-idle-state="waiting" data-playback-state="inactive" title="Round-trip time to Spotify API for the last play command">
         <span id="latency-value">— ms</span>
-        <img id="idle-playing-indicator" src="assets/baseball.svg" width="16" height="16" alt="" aria-hidden="true" draggable="false" />
+        <span id="playback-state-indicator" aria-hidden="true">
+          <span id="song-playing-indicator"></span>
+          <img id="idle-playing-indicator" src="assets/baseball.svg" width="16" height="16" alt="" draggable="false" />
+        </span>
         <span id="idle-state-text" class="visually-hidden" role="status">Automatic iPad idle mode is waiting.</span>
       </span>
       <button id="btn-stop-all" class="icon-btn" title="Stop playback">🛑</button>
@@ -234,7 +237,7 @@
           <h3>iPad keep-awake</h3>
           <label><input id="in-ipad-keepalive" type="checkbox" /> Use automatic iPad idle silence</label>
           <p class="hint">For the selected device whose name contains "iPad", visible-page idle playback, Pause and Stop use the ten-minute silence track. Resume restores the paused song. Keep Repeat off. Closing or hiding the app stops renewal, so it cannot guarantee silence remains active; Queue or Autoplay can still act if renewal is missed.</p>
-          <p class="hint">This is the normal iPad behavior. The small baseball in the top-right <strong>ms</strong> display appears only after Spotify confirms idle silence is playing. Turn this setting off only when you deliberately want ordinary Spotify Pause/Stop behavior.</p>
+          <p class="hint">This is the normal iPad behavior. The top-right <strong>ms</strong> display shows a play icon for active song playback and swaps it for the small spinning baseball only after Spotify confirms idle silence is playing. Turn this setting off only when you deliberately want ordinary Spotify Pause/Stop behavior.</p>
           <p class="hint">If Spotify stops listing the selected iPad, the error offers <strong>Open Spotify to wake iPad</strong>. iOS requires your tap. Spotify may only open the silence track page, so tap Play if needed and manually return here; Sarcastaball then makes one fresh recovery check. It cannot launch Spotify automatically, force autoplay or switch back to this app.</p>
           <p class="hint"><strong>Keep the iPad volume at least one notch above zero.</strong> Spotify on iPad can pause at zero volume; the silence track itself has no audible content. Sarcastaball reads reported volume only for diagnostics and never sends iPad volume commands.</p>
           <div class="settings-actions">

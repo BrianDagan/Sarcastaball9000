@@ -20,6 +20,9 @@ async function renderKeepAwake(page, state) {
   await page.evaluate(state => {
     localStorage.setItem(LS_IPAD_KEEPALIVE, state === "off" ? "0" : "1");
     idlePlayback = state === "running" ? { deviceId: "synthetic-device", durationMs: 600000 } : null;
+    nowPlaying = state === "song"
+      ? { uuid: "synthetic-playback", paused: false }
+      : state === "paused" ? { uuid: "synthetic-playback", paused: true } : null;
     idleFailure = null;
     idleBlocked = false;
     updateIdleControls();
@@ -38,10 +41,13 @@ for (const [width, height] of [[1280, 800], [1024, 768], [768, 1024], [390, 844]
       return { headerHeight: header.height, gridTop: grid.top, indicatorWidth: indicator.width, indicatorHeight: indicator.height };
     });
     const original = await geometry();
-    for (const state of ["on", "running", "off", "running", "on"]) {
+    for (const state of ["on", "song", "paused", "running", "off", "song", "on"]) {
       await renderKeepAwake(page, state);
       const expected = state === "on" ? "waiting" : state === "off" ? "disabled" : "running";
-      await expect(indicator).toHaveAttribute("data-idle-state", expected);
+      await expect(indicator).toHaveAttribute("data-idle-state",
+        ["song", "paused"].includes(state) ? "waiting" : expected);
+      await expect(indicator).toHaveAttribute("data-playback-state",
+        state === "song" ? "playing" : state === "paused" ? "paused" : "inactive");
       await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
       const current = await geometry();
       for (const key of Object.keys(original)) expect(Math.abs(current[key] - original[key])).toBeLessThan(0.1);
@@ -54,7 +60,7 @@ for (const [width, height] of [[1280, 800], [1024, 768], [768, 1024], [390, 844]
   });
 }
 
-test("idle playback moves into the latency pill with an accessible muted baseball indicator", async ({ page }) => {
+test("the latency pill swaps active-song and confirmed-idle indicators accessibly", async ({ page }) => {
   await openApp(page);
   await expect(page.locator("#keepalive-toggle")).toHaveCount(0);
   await page.locator("#btn-settings").click();
@@ -64,13 +70,25 @@ test("idle playback moves into the latency pill with an accessible muted basebal
   await renderKeepAwake(page, "on");
   await expect(input).toBeChecked();
   await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "waiting");
+  await expect(page.locator("#song-playing-indicator")).toBeHidden();
   await expect(page.locator("#idle-playing-indicator")).toBeHidden();
+  await renderKeepAwake(page, "song");
+  const play = page.locator("#song-playing-indicator");
+  await expect(play).toBeVisible();
+  await expect(page.locator("#idle-playing-indicator")).toBeHidden();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-playback-state", "playing");
+  await expect(page.locator("#idle-state-text")).toContainText("A song is playing");
+  await renderKeepAwake(page, "paused");
+  await expect(play).toBeHidden();
+  await expect(page.locator("#idle-playing-indicator")).toBeHidden();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-playback-state", "paused");
   await renderKeepAwake(page, "off");
   await expect(input).not.toBeChecked();
   await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "disabled");
   await renderKeepAwake(page, "running");
   const ball = page.locator("#idle-playing-indicator");
   await expect(input).toBeChecked();
+  await expect(play).toBeHidden();
   await expect(ball).toBeVisible();
   await expect(ball).toHaveAttribute("src", "assets/baseball.svg");
   await expect(ball).toHaveAttribute("alt", "");

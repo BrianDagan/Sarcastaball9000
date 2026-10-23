@@ -281,15 +281,17 @@ new hardware validation. The preference is on when absent and is saved for this
 origin under `s9000.ipadKeepAlive` (`0` means off); uncheck it to opt out.
 
 The former coffee-cup toolbar switch is removed. The top-right latency pill
-reserves a fixed-size space for a muted baseball, which appears and spins only
-while idle silence is confirmed playing on the selected iPad. A successful
-Spotify command response alone does not start the ball: after a short fixed
-settling delay, one fresh playback-state read must report the silence track, the
-selected device and `is_playing: true`. Reduced motion disables the animation
-without changing the reported state. The Settings checkbox remains as a
-persistent troubleshooting opt-out. Normal activity does not add a banner or
-shift the grid; genuine keep-awake errors still display their explanation and
-Retry action.
+reserves a fixed-size playback-state space. It shows a play triangle while a
+song is active, then swaps to a muted baseball that appears and spins only while
+idle silence is confirmed playing on the selected iPad. A successful Spotify
+command response alone does not start the ball: after a short fixed settling
+delay, one fresh playback-state read must report the silence track, the selected
+device and `is_playing: true`. Paused, stopped and detached cues leave the space
+blank until confirmed idle silence takes over. Reduced motion disables the
+baseball animation without changing the reported state. The Settings checkbox
+remains as a persistent troubleshooting opt-out. Normal activity does not add a
+banner or shift the grid; genuine keep-awake errors still display their
+explanation and Retry action.
 
 A reported iPad trial lost control after about two minutes paused, while
 continuous playback of a silent Spotify track kept it reachable beyond two

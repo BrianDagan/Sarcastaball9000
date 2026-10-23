@@ -2687,8 +2687,11 @@ function updateIdleControls() {
   const checkbox = document.getElementById("in-ipad-keepalive");
   if (checkbox) checkbox.checked = enabled;
   const running = enabled && !!idlePlayback && !idleFailure && !idleBlocked;
+  const songPlaying = !running && !!nowPlaying && !nowPlaying.paused && !nowPlaying.detached;
   const state = !enabled ? "disabled" : idleFailure ? "attention" : running ? "running" : "waiting";
-  const message = !enabled
+  const message = songPlaying
+    ? "A song is playing."
+    : !enabled
     ? (idlePlayback ? "Automatic idle mode is off. The last silence track may still be playing." : "Automatic idle mode is off.")
     : idleFailure ? "Automatic idle mode needs attention. See the error message for details."
       : running ? "Idle silence is playing on the selected iPad."
@@ -2696,6 +2699,7 @@ function updateIdleControls() {
   const latency = document.getElementById("latency-pill");
   if (latency) {
     latency.dataset.idleState = state;
+    latency.dataset.playbackState = songPlaying ? "playing" : nowPlaying?.paused ? "paused" : "inactive";
     latency.title = `Round-trip time to Spotify API for the last play command. ${message}`;
   }
   const description = document.getElementById("idle-state-text");
@@ -3572,6 +3576,7 @@ function syncTrackedPlaybackState(state) {
     if (!progress.paused) scheduleProgressTick();
   }
   updatePauseBtn();
+  updateIdleControls();
 }
 
 function preserveTrackedPlaybackPosition() {
@@ -3895,6 +3900,7 @@ function setPlaybackPaused(paused) {
   if (paused) pauseProgress();
   else resumeProgress();
   updatePauseBtn();
+  updateIdleControls();
 }
 
 function currentLocalTrackIds() {
@@ -3966,8 +3972,8 @@ async function resumePlayback() {
       playingSnapshot.contextDurationMs = restore.usesContext ? restore.durationMs : null;
     }
     clearIdlePlayback(true);
-    setPlaybackPaused(false);
     nowPlaying.detached = false;
+    setPlaybackPaused(false);
     const expectation = restore || {
       requestedTrackId: playingSnapshot.trackid,
       resolvedTrackId: playingSnapshot.spotifyTrackId,
@@ -4132,6 +4138,7 @@ function setNowPlaying(cell, playback = null) {
     setBallSpin(false);
     updateDeleteButtons();
     stopProgress();
+    updateIdleControls();
     return;
   }
   cell.classList.add("playing");
@@ -4155,6 +4162,7 @@ function setNowPlaying(cell, playback = null) {
     renderProgress();
   }
   scheduleReconciliation();
+  updateIdleControls();
 }
 
 // =====================================================================

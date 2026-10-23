@@ -93,11 +93,34 @@ button { font: inherit; color: inherit; cursor: pointer; }
   gap: 5px;
   white-space: nowrap;
 }
-#idle-playing-indicator {
-  display: block;
+#playback-state-indicator {
+  position: relative;
   width: 16px;
   height: 16px;
   flex: none;
+}
+#song-playing-indicator,
+#idle-playing-indicator {
+  position: absolute;
+  visibility: hidden;
+}
+#song-playing-indicator {
+  left: 4px;
+  top: 3px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 8px solid var(--accent);
+}
+#latency-pill[data-playback-state="playing"] #song-playing-indicator {
+  visibility: visible;
+}
+#idle-playing-indicator {
+  display: block;
+  inset: 0;
+  width: 16px;
+  height: 16px;
   visibility: hidden;
   filter: grayscale(1);
   opacity: 0.65;
@@ -108,6 +131,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 #latency-pill[data-idle-state="running"] #idle-playing-indicator {
   visibility: visible;
   animation-play-state: running;
+}
+#latency-pill[data-idle-state="running"] #song-playing-indicator {
+  visibility: hidden;
 }
 #latency-pill[data-idle-state="attention"] {
   box-shadow: 0 0 0 2px rgba(255,69,58,0.55);
