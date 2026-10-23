@@ -34,7 +34,7 @@ test("invalid saved sign-in offers reconnection without recommending data erasur
   app.window.localStorage.setItem("s9000.volume", "35");
   assert.equal(app.run("getAuth()"), null);
   const message = app.window.document.getElementById("auth-status").textContent;
-  assert.match(message, /Reconnect in Setup/);
+  assert.match(message, /Reconnect in Settings/);
   assert.doesNotMatch(message, /Log out to clear|synthetic-invalid-json/);
   assert.equal(app.window.localStorage.getItem("s9000.auth"), "synthetic-invalid-json");
   assert.equal(app.window.localStorage.getItem("s9000.volume"), "35");
@@ -732,7 +732,7 @@ test("provider revocation asks for reconnection without removing saved configura
   const app = signedIn(t);
   const saved = app.window.localStorage.getItem("s9000.auth");
   app.window.fetch = async () => new Response('{"error":"invalid_grant"}', { status: 400 });
-  await assert.rejects(app.run("getAccessToken()"), /Reconnect in Setup; your library and settings are preserved/);
+  await assert.rejects(app.run("getAccessToken()"), /Reconnect in Settings; your library and settings are preserved/);
   assert.equal(app.window.localStorage.getItem("s9000.auth"), saved);
 });
 

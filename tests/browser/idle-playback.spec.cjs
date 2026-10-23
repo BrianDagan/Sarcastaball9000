@@ -43,6 +43,7 @@ test.afterEach(async ({ page }) => {
 
 async function prepare(page, options = {}) {
   const devices = options.devices || [device()];
+  const selected = options.selectedDevice || devices[0] || device();
   const backend = page.idleBackend = {
     devices,
     durationMs: options.durationMs || 93750,
@@ -51,13 +52,15 @@ async function prepare(page, options = {}) {
     failSilence: false,
     failNextPlayNoActive: options.failNextPlayNoActive === true,
     failNextPlayWithoutReason: options.failNextPlayWithoutReason === true,
+    failNextTrackStatus: options.failNextTrackStatus || null,
     acknowledgeSilenceWithoutPlayback: false,
+    acknowledgeNextTrackWithoutPlayback: false,
     leavePauseStateStale: false,
     pendingPauseState: false,
     calls: [],
     unexpected: [],
     state: {
-      device: { ...devices[0] }, item: track("synthetic-external-track"),
+      device: { ...(devices[0] || selected) }, item: track("synthetic-external-track"),
       is_playing: !!options.playing, progress_ms: 0,
       repeat_state: options.repeatState === undefined ? "off" : options.repeatState,
       shuffle_state: false, actions: { disallows: {} },
@@ -145,10 +148,21 @@ async function prepare(page, options = {}) {
         }
         const uri = call.body?.uris?.[0] || call.body?.offset?.uri;
         const id = uri?.replace("spotify:track:", "") || backend.state.item?.id;
+        if (id !== backend.silenceId && backend.failNextTrackStatus) {
+          const status = backend.failNextTrackStatus;
+          backend.failNextTrackStatus = null;
+          return route.fulfill({ status, json: {
+            error: { status, message: "Synthetic transient playback failure" },
+          } });
+        }
         if (id === backend.silenceId && backend.failSilence) {
           return route.fulfill({ status: 503, json: { error: { status: 503, message: "Synthetic failure" } } });
         }
         if (id === backend.silenceId && backend.acknowledgeSilenceWithoutPlayback) {
+          return route.fulfill({ status: 204 });
+        }
+        if (id !== backend.silenceId && backend.acknowledgeNextTrackWithoutPlayback) {
+          backend.acknowledgeNextTrackWithoutPlayback = false;
           return route.fulfill({ status: 204 });
         }
         backend.state.item = {
@@ -202,7 +216,7 @@ async function prepare(page, options = {}) {
       });
     }
   }, {
-    selected: devices[0], storedName: options.storedName,
+    selected, storedName: options.storedName,
     keepAlive: options.keepAlive, ipad: options.ipad ? IPAD_UA : null,
     trackPlayed: options.trackPlayed,
   });
@@ -303,10 +317,10 @@ async function librarySnapshot(page) {
 }
 
 async function expectIdleStatus(page) {
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "running");
-  await expect(page.locator("#keepalive-ball")).toBeVisible();
-  await expect(page.locator("#keepalive-state-text")).toHaveAttribute("role", "status");
-  await expect(page.locator("#keepalive-state-text")).toContainText(/silence/i);
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "running");
+  await expect(page.locator("#idle-playing-indicator")).toBeVisible();
+  await expect(page.locator("#idle-state-text")).toHaveAttribute("role", "status");
+  await expect(page.locator("#idle-state-text")).toContainText(/silence/i);
   await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
 }
 
@@ -333,10 +347,165 @@ test("a saved iPad selection starts known silence automatically with the default
   await expect(page.locator("#in-ipad-keepalive")).toHaveAccessibleName(/iPad|idle|awake/i);
   const playback = page.locator("#settings-panel-awake");
   await expect(playback.locator("#in-ipad-keepalive")).toHaveCount(1);
-  const guidance = playback.locator("p").filter({ hasText: /autoplay/i });
+  const guidance = playback.locator("p").filter({ hasText: /Queue or Autoplay/i });
   await expect(guidance).toContainText(/queue/i);
   await expect(guidance).toContainText(/clos|hid|background/i);
   await expect(guidance).toContainText(/not necessarily|not guaranteed|cannot guarantee|can't guarantee/i);
+});
+
+test("a missing saved iPad requires a user-tapped Spotify wake and recovers once on return", async ({ page }) => {
+  const selected = device();
+  const backend = await prepare(page, { devices: [], selectedDevice: selected });
+  await page.setViewportSize({ width: 320, height: 568 });
+  const status = page.locator("#ipad-keepalive-status");
+  const wake = status.getByRole("link", { name: "Open Spotify to wake iPad", exact: true });
+
+  await expect(status).toBeVisible();
+  await expect(wake).toHaveAttribute("href", `https://open.spotify.com/track/${SILENCE_ID}`);
+  await expect(wake).toHaveAttribute("target", "_blank");
+  await expect(wake).toHaveAttribute("rel", /noopener/);
+  expect(plays(backend)).toEqual([]);
+  expect(await page.evaluate(() =>
+    playbackDiagnosticBuffer.some(event => event.event === "spotify-wake"))).toBe(false);
+
+  for (const state of ["normal", "hover", "focus", "pressed"]) {
+    if (state === "normal") await page.mouse.move(0, 0);
+    if (state === "hover") await wake.hover();
+    if (state === "focus") {
+      await wake.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      await expect(wake).toBeFocused();
+    }
+    if (state === "pressed") {
+      await wake.hover();
+      await page.mouse.down();
+    }
+    try {
+      expect((await buttonContrast(wake)).ratio).toBeGreaterThanOrEqual(4.5);
+    } finally {
+      if (state === "pressed") {
+        await page.mouse.move(0, 0);
+        await page.mouse.up();
+      }
+    }
+  }
+
+  const deviceReadsBeforeWake = backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices").length;
+  await wake.evaluate(link => {
+    link.addEventListener("click", event => event.preventDefault(), { once: true });
+    link.click();
+  });
+  expect(backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices")).toHaveLength(deviceReadsBeforeWake);
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    Object.defineProperty(document, "hidden", { value: true, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  backend.devices = [selected];
+  backend.state.device = { ...selected };
+  backend.state.is_playing = false;
+  const deviceReadsBeforeReturn = backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices").length;
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    Object.defineProperty(document, "hidden", { value: false, configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  await expect.poll(() => plays(backend).length).toBe(1);
+  expect(backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices")).toHaveLength(deviceReadsBeforeReturn + 1);
+  expect(await page.evaluate(() => playbackDiagnosticBuffer
+    .filter(event => event.event === "spotify-wake")
+    .map(event => event.stage))).toEqual(["request", "hidden", "return"]);
+  await expectIdleStatus(page);
+});
+
+test("a Spotify wake return that remains missing stays blocked without polling or relaunching", async ({ page }) => {
+  const backend = await prepare(page, { devices: [], selectedDevice: device() });
+  const status = page.locator("#ipad-keepalive-status");
+  const wake = status.getByRole("link", { name: "Open Spotify to wake iPad", exact: true });
+  await expect(wake).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    playbackDiagnosticBuffer.filter(event => event.event === "idle-failed").length)).toBe(1);
+  const failuresBefore = await page.evaluate(() =>
+    playbackDiagnosticBuffer.filter(event => event.event === "idle-failed").length);
+  const deviceReadsBefore = backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices").length;
+
+  await wake.evaluate(link => {
+    link.addEventListener("click", event => event.preventDefault(), { once: true });
+    link.click();
+  });
+  await page.evaluate(() => {
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+
+  await expect.poll(() => page.evaluate(() =>
+    playbackDiagnosticBuffer.filter(event => event.event === "idle-failed").length)).toBe(failuresBefore + 1);
+  expect(backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices")).toHaveLength(deviceReadsBefore + 1);
+  expect(plays(backend)).toEqual([]);
+  expect(await page.evaluate(() => ({
+    blocked: idleBlocked,
+    timer: idleTimer,
+    pendingWake: spotifyWakePending,
+    stages: playbackDiagnosticBuffer
+      .filter(event => event.event === "spotify-wake")
+      .map(event => event.stage),
+  }))).toEqual({
+    blocked: true,
+    timer: null,
+    pendingWake: null,
+    stages: ["request", "hidden", "return"],
+  });
+  await expect(status).toBeVisible();
+  await expect(status.getByRole("link", { name: "Open Spotify to wake iPad", exact: true })).toBeVisible();
+});
+
+test("an explicit Start on a missing saved iPad offers wake without opening Spotify automatically", async ({ page }) => {
+  const backend = await prepare(page, {
+    devices: [],
+    selectedDevice: device(),
+    keepAlive: false,
+    trackPlayed: false,
+  });
+  await loadLibrary(page);
+  await page.locator("#grid .cell").first().click();
+  await page.evaluate(() => transportQueue);
+
+  const status = page.locator("#transport-status");
+  await expect(status).toBeVisible();
+  await expect(status.getByRole("link", { name: "Open Spotify to wake iPad", exact: true }))
+    .toHaveAttribute("href", `https://open.spotify.com/track/${SILENCE_ID}`);
+  expect(plays(backend, SONG_URI)).toEqual([]);
+  expect(await page.evaluate(() =>
+    playbackDiagnosticBuffer.some(event => event.event === "spotify-wake"))).toBe(false);
+});
+
+test("a missing non-iPad device never receives the Spotify wake action", async ({ page }) => {
+  const backend = await prepare(page, {
+    devices: [],
+    selectedDevice: device(DEVICE_ID, "Synthetic Laptop", { supports_volume: true }),
+    keepAlive: false,
+    trackPlayed: false,
+  });
+  await loadLibrary(page);
+  await page.locator("#grid .cell").first().click();
+  await page.evaluate(() => transportQueue);
+
+  const status = page.locator("#transport-status");
+  await expect(status).toBeVisible();
+  await expect(status).toContainText(/No active Spotify device/i);
+  await expect(status.getByRole("link", { name: "Open Spotify to wake iPad", exact: true })).toHaveCount(0);
+  expect(plays(backend, SONG_URI)).toEqual([]);
 });
 
 test("idle silence follows Spotify's market-relinked track URI", async ({ page }) => {
@@ -354,6 +523,64 @@ test("idle silence follows Spotify's market-relinked track URI", async ({ page }
     position_ms: 0,
   });
   await expectIdleStatus(page);
+});
+
+test("an acknowledged iPad Start no-op gets one bounded confirmation retry", async ({ page }) => {
+  const backend = await prepare(page, { keepAlive: false, trackPlayed: false });
+  await loadLibrary(page);
+  backend.acknowledgeNextTrackWithoutPlayback = true;
+
+  await startSong(page);
+
+  expect(plays(backend, SONG_URI)).toHaveLength(2);
+  expect(backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player").length).toBe(2);
+  expect(backend.calls.filter(call =>
+    call.method === "GET" && call.path === "/v1/me/player/devices").length).toBeGreaterThanOrEqual(2);
+  expect(await page.evaluate(() => ({
+    uuid: nowPlaying?.uuid,
+    paused: nowPlaying?.paused,
+    detached: nowPlaying?.detached,
+    confirmations: playbackDiagnosticBuffer
+      .filter(event => event.event === "track-confirmation")
+      .map(event => event.outcome),
+  }))).toMatchObject({
+    uuid: ids.firstPlayback,
+    paused: false,
+    detached: false,
+    confirmations: ["unconfirmed", "confirmed"],
+  });
+});
+
+test("a transient iPad Start 502 gets one bounded device recovery retry", async ({ page }) => {
+  const backend = await prepare(page, {
+    keepAlive: false,
+    trackPlayed: false,
+    failNextTrackStatus: 502,
+  });
+  await loadLibrary(page);
+
+  await startSong(page);
+
+  expect(plays(backend, SONG_URI)).toHaveLength(2);
+  expect(commands(backend, "/v1/me/player")).toHaveLength(1);
+  expect(await page.evaluate(() => ({
+    uuid: nowPlaying?.uuid,
+    paused: nowPlaying?.paused,
+    detached: nowPlaying?.detached,
+    failures: playbackDiagnosticBuffer
+      .filter(event => event.event === "play-failed")
+      .map(event => ({ purpose: event.purpose, attempt: event.attempt, status: event.status })),
+    acknowledgements: playbackDiagnosticBuffer
+      .filter(event => event.event === "play-acknowledged" && event.purpose === "start")
+      .map(event => ({ attempt: event.attempt, recovered: event.recovered })),
+  }))).toMatchObject({
+    uuid: ids.firstPlayback,
+    paused: false,
+    detached: false,
+    failures: [{ purpose: "start", attempt: 1, status: 502 }],
+    acknowledgements: [{ attempt: 2, recovered: true }],
+  });
 });
 
 test("zero reported iPad volume blocks idle playback without sending a volume command", async ({ page }) => {
@@ -434,7 +661,7 @@ test("Settings shares sanitized playback diagnostics through the native share sh
   await expect(page.locator("#playback-diagnostics-status")).toContainText(/shared/i);
 });
 
-test("coffee-cup idle silence recovers from a reasonless 404 and stale active flag", async ({ page }) => {
+test("automatic idle silence recovers from a reasonless 404 and stale active flag", async ({ page }) => {
   const backend = await prepare(page, { failNextPlayWithoutReason: true });
   await expect.poll(() => plays(backend).length).toBe(2);
   expect(commands(backend, "/v1/me/player").map(call => call.body)).toEqual([
@@ -760,7 +987,7 @@ test("the visible page automatically renews through several full cycles despite 
     });
   }
   await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "running");
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "running");
 });
 
 test("hidden pages do not renew; returning visible makes a fresh foreground check", async ({ page }) => {
@@ -899,8 +1126,8 @@ test("a success-shaped silence no-op cannot spin the ball or poll Spotify repeat
   const status = page.locator("#ipad-keepalive-status");
   await expect(status).toBeVisible();
   await expect(status).toContainText(/acknowledged two silence requests|not confirmed/i);
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "on");
-  await expect(page.locator("#keepalive-ball")).toBeHidden();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "attention");
+  await expect(page.locator("#idle-playing-indicator")).toBeHidden();
   await expect.poll(() => plays(backend, SILENCE_URI).length).toBe(2);
 
   const handoff = backend.calls.slice(handoffStart);

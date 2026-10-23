@@ -369,7 +369,7 @@ test("provider revocation reports reconnection while keeping the library and Cli
   context.syntheticAuth.revoked = true;
   await page.reload();
   await ready(page);
-  await expect(page.locator("#auth-status")).toContainText("Reconnect in Setup");
+  await expect(page.locator("#auth-status")).toContainText("Reconnect in Settings");
   await expect(page.locator("#grid .cell")).toHaveCount(1);
   await expect(page.locator("#in-client-id")).toHaveValue("synthetic-client");
   expect(await page.evaluate(id => pending.colors[id], ids.firstPlayback)).toBe(2);

@@ -480,7 +480,10 @@ test("an absent player's Pause keeps eligible iPad silence alive while blocking 
   await call(app, "setTabLayout", GROUP, "standard");
   assert.equal(requests.length, count);
   assert.equal(await app.run("resumePlayback()"), true);
-  assert.deepEqual(requests.at(-1).body, { uris: ["spotify:track:synthetic-track-0"], position_ms: Math.round(position) });
+  assert.deepEqual(
+    requests.filter(request => request.path === "/me/player/play").at(-1).body,
+    { uris: ["spotify:track:synthetic-track-0"], position_ms: Math.round(position) },
+  );
   assert.equal(requests.some(request => /repeat|queue|volume/.test(request.path)), false);
 });
 

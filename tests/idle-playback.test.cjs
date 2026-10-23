@@ -218,10 +218,69 @@ test("default idle behavior starts only on a freshly available selected iPad dev
   });
   assert.match(app.plays()[0].url, /device_id=synthetic-device/);
   assert.equal(app.run("nowPlaying"), null);
-  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("spinning"), true);
-  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("hidden"), false);
+  assert.equal(app.window.document.getElementById("latency-pill").dataset.idleState, "running");
+  assert.match(app.window.document.getElementById("idle-state-text").textContent, /silence is playing/i);
   assert.equal(app.run("pendingCount()"), 0);
   assert.equal(app.backend.requests.some(request => /volume|repeat/.test(request.path)), false);
+});
+
+test("a missing saved iPad exposes a user-tapped wake link and makes one check per return", async t => {
+  const app = controller(t);
+  app.backend.devices = [];
+  app.window.localStorage.setItem("s9000.deviceId", "synthetic-device");
+  app.window.localStorage.setItem("s9000.deviceName", "Synthetic iPad");
+  app.run("activeDeviceCapabilities = null; idleReady = true");
+
+  assert.equal(await app.run("checkIdlePlayback()"), false);
+  const status = app.window.document.getElementById("ipad-keepalive-status");
+  let wake = status.querySelector("[data-idle-action='wake']");
+  assert.ok(wake);
+  assert.equal(wake.href, `https://open.spotify.com/track/${SILENCE}`);
+  assert.equal(wake.target, "_blank");
+  assert.equal(app.run("playbackDiagnosticBuffer.some(event => event.event === 'spotify-wake')"), false);
+
+  const clickWithoutNavigation = link => {
+    link.addEventListener("click", event => event.preventDefault(), { once: true });
+    link.click();
+  };
+  const setVisibility = value => {
+    Object.defineProperty(app.window.document, "visibilityState", { value, configurable: true });
+    app.window.document.dispatchEvent(new app.window.Event("visibilitychange"));
+  };
+
+  clickWithoutNavigation(wake);
+  setVisibility("hidden");
+  const firstReturnReads = app.backend.requests.filter(request => request.path === "/me/player/devices").length;
+  setVisibility("visible");
+  assert.equal(await app.run("idleCheckPromise"), false);
+  assert.equal(app.backend.requests.filter(request => request.path === "/me/player/devices").length, firstReturnReads + 1);
+  assert.equal(app.run("idleBlocked"), true);
+  assert.equal(app.run("idleTimer"), null);
+  assert.deepEqual(Array.from(app.run(`
+    playbackDiagnosticBuffer.filter(event => event.event === "spotify-wake").map(event => event.stage)
+  `)), ["request", "hidden", "return"]);
+
+  wake = status.querySelector("[data-idle-action='wake']");
+  clickWithoutNavigation(wake);
+  setVisibility("hidden");
+  app.backend.devices = null;
+  const secondReturnReads = app.backend.requests.filter(request => request.path === "/me/player/devices").length;
+  setVisibility("visible");
+  assert.equal(await app.run("idleCheckPromise"), true);
+  assert.equal(app.backend.requests.filter(request => request.path === "/me/player/devices").length, secondReturnReads + 1);
+  assert.equal(app.plays().length, 1);
+  assert.deepEqual(Array.from(app.run(`
+    playbackDiagnosticBuffer.filter(event => event.event === "spotify-wake").map(event => event.stage)
+  `)), ["request", "hidden", "return", "request", "hidden", "return"]);
+});
+
+test("transport invalidation clears a pending Spotify wake return", t => {
+  const app = controller(t);
+  app.run(`
+    spotifyWakePending = { source: "scheduled", hidden: true };
+    invalidateTransportWork();
+  `);
+  assert.equal(app.run("spotifyWakePending"), null);
 });
 
 test("Pause waits for Spotify's prior pause command before starting silence", async t => {
@@ -500,8 +559,7 @@ test("an acknowledged silence command cannot spin the ball until Spotify confirm
   assert.equal(app.backend.requests.length, 11);
   assert.equal(app.run("idlePlayback"), null);
   assert.match(app.run("idleFailure"), /acknowledged two silence requests/);
-  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("spinning"), false);
-  assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("hidden"), true);
+  assert.equal(app.window.document.getElementById("latency-pill").dataset.idleState, "attention");
   assert.equal(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'idle-confirmation' && entry.outcome === 'unconfirmed').length"), 2);
 });
 
@@ -585,17 +643,17 @@ test("an end-cue stop keeps the song stopped while switching to idle silence", a
   assert.equal(app.backend.state.item.id, SILENCE);
 });
 
-test("status refresh keeps focus on the stable toolbar switch", async t => {
+test("status refresh keeps focus on the persistent Settings opt-out", async t => {
   const app = controller(t);
   await app.run("checkIdlePlayback()");
-  app.window.document.getElementById("keepalive-enabled").focus();
+  app.window.document.getElementById("in-ipad-keepalive").focus();
   await app.run("checkIdlePlayback()");
-  assert.equal(app.window.document.activeElement.id, "keepalive-enabled");
-  assert.equal(app.window.document.getElementById("keepalive-toggle").dataset.state, "running");
+  assert.equal(app.window.document.activeElement.id, "in-ipad-keepalive");
+  assert.equal(app.window.document.getElementById("latency-pill").dataset.idleState, "running");
   assert.equal(app.window.document.getElementById("ipad-keepalive-status").classList.contains("hidden"), true);
   await app.run("setIdleEnabled(false)");
-  assert.equal(app.window.document.activeElement.id, "keepalive-enabled");
-  assert.equal(app.window.document.getElementById("keepalive-toggle").dataset.state, "off");
+  assert.equal(app.window.document.activeElement.id, "in-ipad-keepalive");
+  assert.equal(app.window.document.getElementById("latency-pill").dataset.idleState, "disabled");
 });
 
 test("disabling never pauses another track that replaced idle silence", async t => {

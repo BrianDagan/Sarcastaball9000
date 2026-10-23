@@ -61,7 +61,7 @@ Open **http://127.0.0.1:8000/**. Register that exact URL, including the trailing
 slash, as a redirect URI in your own
 [Spotify developer app](https://developer.spotify.com/dashboard).
 
-In Setup, enter its public **Client ID**, sign in, load a copy of your library and
+In Settings, enter its public **Client ID**, sign in, load a copy of your library and
 select a Spotify device. **No client secret is required or should be entered.**
 Start with an appropriate device and per-song volume.
 
@@ -88,8 +88,15 @@ browser requirements and troubleshooting.
 - **Keep iPad Spotify awake** is enabled by default for selected Spotify devices
   whose names contain `iPad`. While visible, idle time, Pause and Stop use a silent
   track instead of leaving Spotify paused; Resume restores the paused tile.
-  Disable it in Setup for normal Pause/Stop behavior. Keep Spotify Repeat off;
-  queue/Autoplay behavior after leaving the page is not controlled by this mode.
+  A small baseball in the top-right latency display marks confirmed idle playback;
+  the former coffee-cup toolbar switch is gone. The persistent troubleshooting
+  opt-out remains under **Settings -> Awake** for deliberately restoring normal
+  Pause/Stop behavior. If Spotify drops the selected iPad, a user-tapped
+  **Open Spotify to wake iPad** action opens the public silence track; Spotify
+  may require a manual Play tap and manual return before Sarcastaball performs
+  one fresh recovery check. The app cannot auto-launch Spotify, force autoplay
+  or switch back. Keep Spotify Repeat off; queue/Autoplay behavior after leaving
+  the page is not controlled by this mode.
   See [idle playback and its limits](guides/configuration.md#automatic-ipad-idle-silence).
 - Public source and site assets are discoverable. `noindex, nofollow` and
   Spotify allowlisting do not provide website authorization.

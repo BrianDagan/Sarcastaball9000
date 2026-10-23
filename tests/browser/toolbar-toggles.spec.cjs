@@ -27,25 +27,26 @@ async function renderKeepAwake(page, state) {
 }
 
 for (const [width, height] of [[1280, 800], [1024, 768], [768, 1024], [390, 844], [320, 568], [844, 390]]) {
-  test(`keep-awake state changes do not shift the grid at ${width}x${height}`, async ({ page }) => {
+  test(`idle indicator state changes do not shift the grid at ${width}x${height}`, async ({ page }) => {
     await page.setViewportSize({ width, height });
     await openApp(page);
-    const toggle = page.locator("#keepalive-toggle");
+    const indicator = page.locator("#latency-pill");
     const geometry = () => page.evaluate(() => {
       const header = document.getElementById("topbar").getBoundingClientRect();
       const grid = document.getElementById("grid-container").getBoundingClientRect();
-      const toggle = document.getElementById("keepalive-toggle").getBoundingClientRect();
-      return { headerHeight: header.height, gridTop: grid.top, toggleWidth: toggle.width, toggleHeight: toggle.height };
+      const indicator = document.getElementById("latency-pill").getBoundingClientRect();
+      return { headerHeight: header.height, gridTop: grid.top, indicatorWidth: indicator.width, indicatorHeight: indicator.height };
     });
     const original = await geometry();
     for (const state of ["on", "running", "off", "running", "on"]) {
       await renderKeepAwake(page, state);
-      await expect(toggle).toHaveAttribute("data-state", state);
+      const expected = state === "on" ? "waiting" : state === "off" ? "disabled" : "running";
+      await expect(indicator).toHaveAttribute("data-idle-state", expected);
       await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
       const current = await geometry();
       for (const key of Object.keys(original)) expect(Math.abs(current[key] - original[key])).toBeLessThan(0.1);
-      await toggle.scrollIntoViewIfNeeded();
-      const bounds = await toggle.boundingBox();
+      await indicator.scrollIntoViewIfNeeded();
+      const bounds = await indicator.boundingBox();
       expect(bounds.x).toBeGreaterThanOrEqual(0);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
     }
@@ -53,21 +54,23 @@ for (const [width, height] of [[1280, 800], [1024, 768], [768, 1024], [390, 844]
   });
 }
 
-test("keep-awake has three distinct accessible states and a muted shared baseball", async ({ page }) => {
+test("idle playback moves into the latency pill with an accessible muted baseball indicator", async ({ page }) => {
   await openApp(page);
-  const input = page.locator("#keepalive-enabled");
-  await expect(input).toHaveAccessibleName("Keep iPad Spotify awake");
+  await expect(page.locator("#keepalive-toggle")).toHaveCount(0);
+  await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "Awake", exact: true }).click();
+  const input = page.locator("#in-ipad-keepalive");
+  await expect(input).toHaveAccessibleName("Use automatic iPad idle silence");
   await renderKeepAwake(page, "on");
   await expect(input).toBeChecked();
-  await expect(page.locator("#keepalive-emoji")).toHaveText("\u2615\uFE0F");
-  await expect(page.locator("#keepalive-ball")).toBeHidden();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "waiting");
+  await expect(page.locator("#idle-playing-indicator")).toBeHidden();
   await renderKeepAwake(page, "off");
   await expect(input).not.toBeChecked();
-  await expect(page.locator("#keepalive-emoji")).toHaveText("\u{1F634}");
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "disabled");
   await renderKeepAwake(page, "running");
-  const ball = page.locator("#keepalive-ball");
+  const ball = page.locator("#idle-playing-indicator");
   await expect(input).toBeChecked();
-  await expect(page.locator("#keepalive-emoji")).toBeHidden();
   await expect(ball).toBeVisible();
   await expect(ball).toHaveAttribute("src", "assets/baseball.svg");
   await expect(ball).toHaveAttribute("alt", "");
@@ -75,34 +78,32 @@ test("keep-awake has three distinct accessible states and a muted shared basebal
     const style = getComputedStyle(element);
     return { filter: style.filter, opacity: Number(style.opacity), playState: style.animationPlayState };
   })).toEqual({ filter: "grayscale(1)", opacity: 0.65, playState: "running" });
-  await expect(page.locator("#keepalive-state-text")).toContainText("Silence is playing");
+  await expect(page.locator("#idle-state-text")).toContainText("Idle silence is playing");
   await page.emulateMedia({ reducedMotion: "reduce" });
   expect(await ball.evaluate(element => element.getAnimations().length)).toBe(0);
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "running");
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "running");
 });
 
-test("toolbar and Settings keep-awake switches stay synchronized without stealing focus", async ({ page }) => {
+test("the Settings opt-out persists without restoring the removed toolbar switch", async ({ page }) => {
   await openApp(page);
-  await page.locator("#keepalive-enabled").focus();
-  await page.keyboard.press("Space");
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "off");
-  await expect(page.locator("#keepalive-enabled")).toBeFocused();
+  await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "Awake", exact: true }).click();
+  const input = page.locator("#in-ipad-keepalive");
+  await input.focus();
+  await input.uncheck();
+  await expect(input).toBeFocused();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "disabled");
   expect(await page.evaluate(() => localStorage.getItem(LS_IPAD_KEEPALIVE))).toBe("0");
+  await page.locator("#btn-close-modal").click();
+  await expect(page.locator("#keepalive-toggle")).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "disabled");
   await page.locator("#btn-settings").click();
   await page.getByRole("tab", { name: "Awake", exact: true }).click();
   await expect(page.locator("#in-ipad-keepalive")).not.toBeChecked();
-  await page.locator("#in-ipad-keepalive").check();
-  await expect(page.locator("#keepalive-enabled")).toBeChecked();
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "on");
-  await page.locator("#btn-close-modal").click();
-  await page.locator("#keepalive-toggle").click();
-  await expect(page.locator("#keepalive-enabled")).not.toBeChecked();
-  await page.reload();
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "off");
-  await expect(page.locator("#keepalive-emoji")).toHaveText("\u{1F634}");
 });
 
-test("the toolbar switch disables owned silence without an activity banner", async ({ page }) => {
+test("the Settings opt-out disables owned silence without an activity banner", async ({ page }) => {
   await openApp(page);
   await page.evaluate(() => {
     window.idlePauses = 0;
@@ -116,14 +117,17 @@ test("the toolbar switch disables owned silence without an activity banner", asy
     };
   });
   await renderKeepAwake(page, "running");
-  await page.locator("#keepalive-enabled").focus();
-  await page.keyboard.press("Space");
+  await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "Awake", exact: true }).click();
+  const input = page.locator("#in-ipad-keepalive");
+  await input.focus();
+  await input.uncheck();
   await page.evaluate(() => transportQueue);
   expect(await page.evaluate(() => window.idlePauses)).toBe(1);
-  await expect(page.locator("#keepalive-toggle")).toHaveAttribute("data-state", "off");
-  await expect(page.locator("#keepalive-enabled")).toBeFocused();
+  await expect(page.locator("#latency-pill")).toHaveAttribute("data-idle-state", "disabled");
+  await expect(input).toBeFocused();
   await expect(page.locator("#ipad-keepalive-status")).toBeHidden();
-  await expect(page.locator("#in-ipad-keepalive")).not.toBeChecked();
+  await expect(input).not.toBeChecked();
 });
 
 test("Track Played uses uncovered and covered monkey faces with unchanged checkbox behavior", async ({ page }) => {

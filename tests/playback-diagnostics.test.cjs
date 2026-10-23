@@ -82,6 +82,28 @@ test("playback diagnostics persist across reloads without exporting unrecognized
   assert.equal("deviceName" in events[0], false);
 });
 
+test("Spotify wake diagnostics retain only allowlisted lifecycle categories", async t => {
+  const app = createApp();
+  t.after(() => app.close());
+  app.run(`recordPlaybackDiagnostic("spotify-wake", {
+    source: "scheduled",
+    stage: "request",
+    destination: "https://open.spotify.com/track/private-value",
+    deviceName: "Private iPad"
+  })`);
+  await app.run("playbackDiagnosticPersistQueue");
+
+  const exported = app.run("createPlaybackDiagnosticExport()");
+  assert.deepEqual(Object.keys(exported.report.events[0]).sort(), [
+    "at", "event", "id", "source", "stage",
+  ]);
+  assert.equal(exported.report.events[0].event, "spotify-wake");
+  assert.equal(exported.report.events[0].source, "scheduled");
+  assert.equal(exported.report.events[0].stage, "request");
+  assert.equal(exported.text.includes("private-value"), false);
+  assert.equal(exported.text.includes("Private iPad"), false);
+});
+
 test("stale diagnostic writers cannot recreate storage after cleanup invalidates them", async t => {
   const app = createApp();
   t.after(() => app.close());

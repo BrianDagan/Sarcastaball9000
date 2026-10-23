@@ -866,7 +866,8 @@ test("a blocked fine-cue preview can retry the same clamped cue after attendance
   await page.evaluate(() => transportQueue);
   await expect(slider).toHaveValue("-100");
   await expect(slider).toHaveAttribute("aria-valuetext", /\+0\.00s.*0:00\.00/);
-  expect((await calls(page)).slice(before.length).map(call => call.path)).toEqual(["/me/player/play", "/me/player/seek"]);
+  expect((await calls(page)).slice(before.length).map(call => call.path))
+    .toEqual(["/me/player/play", "/me/player", "/me/player/seek"]);
   expect(await page.evaluate(() => nowPlaying.uuid === idleResume?.uuid)).toBe(false);
   expect(await page.evaluate(() => nowPlaying.paused)).toBe(false);
   expect(await page.evaluate(() => idlePlayback)).toBeNull();

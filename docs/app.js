@@ -1736,7 +1736,7 @@ function getAuth() {
   } catch {
     const status = document.getElementById("auth-status");
     if (status) {
-      status.textContent = "Saved sign-in could not be read. Reconnect in Setup; your library and settings have not been reset.";
+      status.textContent = "Saved sign-in could not be read. Reconnect in Settings; your library and settings have not been reset.";
       status.className = "status err";
     }
     return null;
@@ -1881,8 +1881,8 @@ async function readTokenResponse(response) {
 class SpotifyError extends Error {
   constructor(status, reason, retryAfterMs) {
     const guidance = {
-      400: reason === "INVALID_GRANT" ? "Spotify authorization was rejected. Reconnect in Setup; your library and settings are preserved." : "The request failed. Check Setup and try again.",
-      401: "Reconnect to Spotify in Setup.",
+      400: reason === "INVALID_GRANT" ? "Spotify authorization was rejected. Reconnect in Settings; your library and settings are preserved." : "The request failed. Check Settings and try again.",
+      401: "Reconnect to Spotify in Settings.",
       403: "Check the app allowlist, granted permissions and device capabilities.",
       404: reason === "NO_ACTIVE_DEVICE"
         ? "Spotify has no active playback device."
@@ -1894,6 +1894,17 @@ class SpotifyError extends Error {
     this.status = status;
     this.reason = reason;
     this.retryAfterMs = retryAfterMs;
+  }
+}
+
+class SelectedIpadUnavailableError extends Error {
+  constructor() {
+    super(
+      "The selected iPad is unavailable in Spotify Connect. Use Open Spotify to wake iPad, " +
+      "tap Play on the silence track if Spotify does not start it, then return to Sarcastaball. " +
+      "Spotify cannot switch back to this app automatically.",
+    );
+    this.name = "SelectedIpadUnavailableError";
   }
 }
 
@@ -2238,6 +2249,8 @@ let transportGeneration = 0;
 let transportQueue = Promise.resolve();
 let transportPending = false;
 let transportIntentKind = null;
+let deferredTransportIntent = 0;
+let trackConfirmationPending = false;
 let playingSnapshot = null;
 let stopDeadlineTimer = null;
 let manualStopTimer = null;
@@ -2257,9 +2270,12 @@ const PLAYBACK_MISMATCH_CONFIRMATIONS = 2;
 const PLAYBACK_MISMATCH_MIN_INTERVAL_MS = 1000;
 const PLAYBACK_RECONCILE_MS = 5000;
 const PAUSED_PLAYBACK_RECONCILE_MS = 60000;
+const TRACK_CONFIRM_SETTLE_MS = 750;
 const DEVICE_ACTIVATION_SETTLE_MS = 500;
 const IDLE_CONFIRM_SETTLE_MS = 750;
+const TRANSIENT_PLAY_FAILURE_STATUSES = new Set([500, 502, 503, 504]);
 const IDLE_SILENCE_TRACK = "3mkOlbSv5RYadx0JsjTrKq";
+const IDLE_SILENCE_URL = `https://open.spotify.com/track/${IDLE_SILENCE_TRACK}`;
 const IDLE_CHECK_MS = 30000;
 const IDLE_PLAYBACK_CHECK_MS = 60000;
 const IDLE_RENEW_BEFORE_MS = 60000;
@@ -2275,8 +2291,10 @@ let idleGeneration = 0;
 let idleCheckPromise = null;
 let idleBlocked = false;
 let idleFailure = null;
+let idleWakeAvailable = false;
 let idleReady = false;
 let idlePageActive = true;
+let spotifyWakePending = null;
 
 const PLAYBACK_DIAGNOSTIC_FIELDS = new Set([
   "source", "purpose", "stage", "outcome", "reason", "errorKind", "trackKind", "repeatState", "requestMode",
@@ -2297,17 +2315,20 @@ const PLAYBACK_DIAGNOSTIC_EVENTS = new Set([
   "app-start", "device-refresh", "device-transfer", "idle-already-running", "idle-blocked",
   "idle-check-start", "idle-confirmation", "idle-device", "idle-failed", "idle-recovery-skipped",
   "idle-state-read", "idle-track-metadata", "keep-awake-changed", "page-lifecycle",
-  "play-acknowledged", "play-failed", "play-request", "transport-intent", "visibility-changed",
+  "play-acknowledged", "play-failed", "play-request", "track-confirmation", "track-control-lost",
+  "spotify-wake", "transport-intent", "visibility-changed",
 ]);
 const PLAYBACK_DIAGNOSTIC_VALUES = {
-  source: new Set(["pause", "stop", "scheduled", "start", "resume"]),
+  source: new Set(["pause", "stop", "scheduled", "start", "resume", "reconcile"]),
   purpose: new Set(["playback", "track", "start", "resume", "silence", "silence-confirmation"]),
   stage: new Set([
     "request", "acknowledged", "safety", "metadata-recheck", "recovery-safety",
-    "pause-settle", "pagehide", "pageshow", "pageshow-restored",
+    "confirmation", "reconciliation", "pause-settle", "pagehide", "pageshow", "pageshow-restored",
+    "hidden", "return",
   ]),
   outcome: new Set([
-    "confirmed", "unconfirmed", "enabled", "disabled", "unsafe-state", "different-playback", "zero-volume",
+    "confirmed", "unconfirmed", "enabled", "disabled", "unsafe-state", "different-playback",
+    "missing-playback", "zero-volume",
   ]),
   reason: new Set(["none", "QUOTA_EXCEEDED", "NO_ACTIVE_DEVICE", "RESTRICTION_VIOLATED", "PREMIUM_REQUIRED"]),
   errorKind: new Set(["spotify", "aborted", "application"]),
@@ -2570,14 +2591,75 @@ function idleEnabled() {
   try { return localStorage.getItem(LS_IPAD_KEEPALIVE) !== "0"; }
   catch {
     idleBlocked = true;
+    idleWakeAvailable = false;
     idleFailure = "Keep-awake settings could not be read. Check browser storage permissions; no app data was reset.";
     return false;
   }
 }
 
+function isIdleDeviceName(name) {
+  return typeof name === "string" && /ipad/i.test(name);
+}
+
 function isIdleDevice(device) {
   return typeof device?.id === "string" && device.id.length > 0 &&
-    typeof device.name === "string" && /ipad/i.test(device.name) && !device.is_restricted;
+    isIdleDeviceName(device.name) && !device.is_restricted;
+}
+
+function selectedDeviceIsIpad(deviceId) {
+  if (deviceId && deviceId === activeDeviceId && isIdleDeviceName(activeDeviceCapabilities?.name)) return true;
+  let storedId = null;
+  let storedName = null;
+  try {
+    storedId = localStorage.getItem(LS_DEVICE);
+    storedName = localStorage.getItem(LS_DEVICE_NAME);
+  } catch {
+    return false;
+  }
+  const selectedId = activeDeviceId || storedId;
+  return !!deviceId && deviceId === selectedId &&
+    (isIdleDeviceName(activeDeviceCapabilities?.name) || isIdleDeviceName(storedName));
+}
+
+function spotifyWakeSource(action) {
+  return {
+    Start: "start",
+    Resume: "resume",
+    Pause: "pause",
+    Stop: "stop",
+  }[action] || "scheduled";
+}
+
+function createSpotifyWakeAction(source = "scheduled", idleAction = null) {
+  const link = document.createElement("a");
+  link.href = IDLE_SILENCE_URL;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = "Open Spotify to wake iPad";
+  link.title = "Spotify may require you to tap Play and manually return to Sarcastaball.";
+  if (idleAction) link.dataset.idleAction = idleAction;
+  link.onclick = () => {
+    spotifyWakePending = { source, hidden: false };
+    recordPlaybackDiagnostic("spotify-wake", { source, stage: "request" });
+  };
+  return link;
+}
+
+function markSpotifyWakeHidden() {
+  if (!spotifyWakePending || spotifyWakePending.hidden) return;
+  spotifyWakePending.hidden = true;
+  recordPlaybackDiagnostic("spotify-wake", {
+    source: spotifyWakePending.source,
+    stage: "hidden",
+  });
+}
+
+function completeSpotifyWakeReturn() {
+  if (!spotifyWakePending?.hidden) return false;
+  const source = spotifyWakePending.source;
+  spotifyWakePending = null;
+  recordPlaybackDiagnostic("spotify-wake", { source, stage: "return" });
+  return true;
 }
 
 function idleForeground() {
@@ -2602,36 +2684,30 @@ function clearIdlePlayback(clearResume = false) {
 
 function updateIdleControls() {
   const enabled = idleEnabled();
-  for (const id of ["in-ipad-keepalive", "keepalive-enabled"]) {
-    const checkbox = document.getElementById(id);
-    if (checkbox) checkbox.checked = enabled;
-  }
+  const checkbox = document.getElementById("in-ipad-keepalive");
+  if (checkbox) checkbox.checked = enabled;
   const running = enabled && !!idlePlayback && !idleFailure && !idleBlocked;
-  const state = !enabled ? "off" : running ? "running" : "on";
+  const state = !enabled ? "disabled" : idleFailure ? "attention" : running ? "running" : "waiting";
   const message = !enabled
-    ? (idlePlayback ? "Keep-awake off. The last silence track may still be playing." : "Keep-awake off. Pause and Stop pause Spotify normally.")
-    : idleFailure ? "Keep-awake needs attention. See the error message for details."
-      : running ? "Keep-awake running. Silence is playing on the selected iPad."
-        : "Keep-awake on: waiting for idle Spotify on a selected iPad.";
-  const toggle = document.getElementById("keepalive-toggle");
-  if (toggle) { toggle.dataset.state = state; toggle.title = message; }
-  const emoji = document.getElementById("keepalive-emoji");
-  if (emoji) {
-    emoji.textContent = enabled ? "\u2615\uFE0F" : "\u{1F634}";
-    emoji.classList.toggle("hidden", running);
+    ? (idlePlayback ? "Automatic idle mode is off. The last silence track may still be playing." : "Automatic idle mode is off.")
+    : idleFailure ? "Automatic idle mode needs attention. See the error message for details."
+      : running ? "Idle silence is playing on the selected iPad."
+        : "Automatic iPad idle mode is waiting.";
+  const latency = document.getElementById("latency-pill");
+  if (latency) {
+    latency.dataset.idleState = state;
+    latency.title = `Round-trip time to Spotify API for the last play command. ${message}`;
   }
-  const ball = document.getElementById("keepalive-ball");
-  ball?.classList.toggle("hidden", !running);
-  ball?.classList.toggle("spinning", running);
-  const description = document.getElementById("keepalive-state-text");
+  const description = document.getElementById("idle-state-text");
   if (description && description.textContent !== message) description.textContent = message;
   const status = document.getElementById("ipad-keepalive-status");
   if (!status) return;
   const focusedAction = status.contains(document.activeElement) ? document.activeElement.dataset.idleAction : null;
   const restoreFocus = () => {
     if (!focusedAction) return;
-    const control = Array.from(status.querySelectorAll("button")).find(button => button.dataset.idleAction === focusedAction);
-    (control || document.getElementById("keepalive-enabled"))?.focus({ preventScroll: true });
+    const control = Array.from(status.querySelectorAll("[data-idle-action]"))
+      .find(item => item.dataset.idleAction === focusedAction);
+    (control || document.getElementById("btn-settings"))?.focus({ preventScroll: true });
   };
   status.replaceChildren();
   status.classList.toggle("hidden", !idleFailure);
@@ -2639,6 +2715,9 @@ function updateIdleControls() {
   const text = document.createElement("span");
   text.textContent = idleFailure;
   status.appendChild(text);
+  if (idleWakeAvailable && enabled) {
+    status.appendChild(createSpotifyWakeAction("scheduled", "wake"));
+  }
   if (idleFailure && enabled) {
     const retry = document.createElement("button");
     retry.type = "button";
@@ -2647,6 +2726,7 @@ function updateIdleControls() {
     retry.onclick = () => {
       idleBlocked = false;
       idleFailure = null;
+      idleWakeAvailable = false;
       void checkIdlePlayback();
     };
     status.appendChild(retry);
@@ -2664,6 +2744,7 @@ function updateIdleControls() {
 
 function reportIdleFailure(error, source = "scheduled") {
   idleBlocked = true;
+  idleWakeAvailable = error instanceof SelectedIpadUnavailableError;
   clearTimeout(idleTimer);
   idleTimer = null;
   idleFailure = `Idle silence was not confirmed. ${error.message} Playback and saved app data have not been reset. Before reloading, use Settings > Awake > Share diagnostics or Download JSON.`;
@@ -2849,8 +2930,8 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
       deviceRestricted: device?.is_restricted === true,
     });
     if (!isIdleDevice(device)) {
-      if (selectedId && isIdleDevice(activeDeviceCapabilities) && !device) {
-        throw new Error("The selected iPad is unavailable. Open Spotify on that device, then retry.");
+      if (selectedId && !device && selectedDeviceIsIpad(selectedId)) {
+        throw new SelectedIpadUnavailableError();
       }
       idlePlayback = null;
       updateIdleControls();
@@ -2917,6 +2998,7 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
     if (isSilenceState(state) && state.is_playing) {
       const observed = recordIdlePlayback(device.id, duration, state.progress_ms, observedAt);
       idleFailure = null;
+      idleWakeAvailable = false;
       recordPlaybackDiagnostic("idle-already-running", {
         source,
         progressSec: Math.round(state.progress_ms / 1000),
@@ -2994,6 +3076,7 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
         }
       }
       idleFailure = null;
+      idleWakeAvailable = false;
       updateIdleControls();
       return true;
     } finally {
@@ -3036,6 +3119,7 @@ async function setIdleEnabled(enabled) {
   cancelIdleCheck();
   idleBlocked = false;
   idleFailure = null;
+  idleWakeAvailable = false;
   updateIdleControls();
   if (enabled) return checkIdlePlayback();
   const owned = idlePlayback || idlePendingDevice;
@@ -3054,9 +3138,7 @@ async function setIdleEnabled(enabled) {
 }
 
 function wireIdlePlaybackControls() {
-  for (const id of ["in-ipad-keepalive", "keepalive-enabled"]) {
-    document.getElementById(id).onchange = event => { void setIdleEnabled(event.target.checked); };
-  }
+  document.getElementById("in-ipad-keepalive").onchange = event => { void setIdleEnabled(event.target.checked); };
   updateIdleControls();
 }
 
@@ -3066,6 +3148,9 @@ function reportTransportFailure(action, error, retry) {
   const text = document.createElement("span");
   text.textContent = `${action} was not confirmed. ${error.message} Check Spotify before relying on the displayed state.`;
   status.appendChild(text);
+  if (error instanceof SelectedIpadUnavailableError) {
+    status.appendChild(createSpotifyWakeAction(spotifyWakeSource(action)));
+  }
   if (retry) {
     const button = document.createElement("button");
     button.textContent = "Retry";
@@ -3155,6 +3240,7 @@ async function refreshPlaybackDevice(deviceId, current, purpose = "playback") {
     deviceRestricted: device?.is_restricted === true,
   });
   if (!device) {
+    if (selectedDeviceIsIpad(deviceId)) throw new SelectedIpadUnavailableError();
     throw new Error("The selected Spotify device is asleep or unavailable. Open Spotify on that device once, then press Retry.");
   }
   if (device.is_restricted) {
@@ -3177,7 +3263,8 @@ async function reactivatePlaybackDevice(deviceId, current, knownDevice = null, p
   return device;
 }
 
-async function playOnDevice(deviceId, body, current, permitRetry = null, purpose = "track") {
+async function playOnDevice(deviceId, body, current, permitRetry = null, purpose = "track",
+                            retryTransientFailure = false) {
   const play = () => api(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
     method: "PUT", ...(body ? { body: JSON.stringify(body) } : {}),
   }, current);
@@ -3193,7 +3280,10 @@ async function playOnDevice(deviceId, body, current, permitRetry = null, purpose
     recordPlaybackDiagnostic("play-failed", {
       purpose, attempt: 1, requestMode, ...diagnosticErrorDetails(error),
     });
-    if (!(error instanceof SpotifyError) || error.status !== 404 || !current()) throw error;
+    const retryable = error instanceof SpotifyError &&
+      (error.status === 404 ||
+       (retryTransientFailure && TRANSIENT_PLAY_FAILURE_STATUSES.has(error.status)));
+    if (!retryable || !current()) throw error;
     const device = await refreshPlaybackDevice(deviceId, current, purpose);
     if (!device || !current()) return false;
     if (permitRetry && !await permitRetry(device, current)) return false;
@@ -3217,6 +3307,79 @@ async function playOnDevice(deviceId, body, current, permitRetry = null, purpose
       throw retryError;
     }
   }
+}
+
+function playbackRequestTrackIds(request) {
+  return new Set([request?.requestedTrackId, request?.resolvedTrackId].filter(Boolean));
+}
+
+function playbackStateMatchesRequest(state, deviceId, request) {
+  const expected = playbackRequestTrackIds(request);
+  return state?.device?.id === deviceId && state.is_playing === true &&
+    [state.item?.id, state.item?.linked_from?.id].some(id => id && expected.has(id));
+}
+
+function shouldConfirmTrackPlayback(deviceId) {
+  return activeDeviceCapabilities?.id === deviceId && isIdleDevice(activeDeviceCapabilities);
+}
+
+async function readTrackConfirmation(deviceId, request, current, source, attempt, requestedAt) {
+  if (!await waitForDeviceActivation(current, TRACK_CONFIRM_SETTLE_MS)) return null;
+  const state = await api("/me/player", {}, current);
+  if (!current()) return null;
+  const confirmed = playbackStateMatchesRequest(state, deviceId, request);
+  recordPlaybackDiagnostic("track-confirmation", {
+    source,
+    stage: "confirmation",
+    attempt,
+    outcome: confirmed ? "confirmed" : "unconfirmed",
+    elapsedMs: Math.round(performance.now() - requestedAt),
+    ...diagnosticStateDetails(state, activeDeviceCapabilities, playbackRequestTrackIds(request)),
+  });
+  return { confirmed, state };
+}
+
+async function confirmTrackPlayback(deviceId, request, current, source, started, requestedAt) {
+  if (!shouldConfirmTrackPlayback(deviceId)) return null;
+  let confirmation = await readTrackConfirmation(deviceId, request, current, source, 1, requestedAt);
+  if (!confirmation || !current()) return null;
+  if (confirmation.confirmed) return confirmation.state;
+  const observed = confirmation.state?.item ? "a different track" : "no current track";
+  if (started?.recovered) {
+    throw new Error(`Spotify acknowledged the recovered ${source} request but reported ${observed}. Your cue position was preserved; press Retry.`);
+  }
+
+  const refreshed = await refreshPlaybackDevice(deviceId, current, source);
+  if (!refreshed || !current()) return null;
+  const active = await reactivatePlaybackDevice(deviceId, current, refreshed, source);
+  if (!active || !current()) return null;
+  const requestMode = diagnosticRequestMode(request.body);
+  const retryAt = performance.now();
+  recordPlaybackDiagnostic("play-request", {
+    purpose: source, attempt: 2, requestMode, recovered: true,
+  });
+  try {
+    await api(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
+      method: "PUT",
+      body: JSON.stringify(request.body),
+    }, current);
+    if (current()) recordPlaybackDiagnostic("play-acknowledged", {
+      purpose: source, attempt: 2, requestMode, recovered: true,
+    });
+  } catch (error) {
+    recordPlaybackDiagnostic("play-failed", {
+      purpose: source, attempt: 2, requestMode, recovered: true,
+      ...diagnosticErrorDetails(error),
+    });
+    throw error;
+  }
+  confirmation = await readTrackConfirmation(deviceId, request, current, source, 2, retryAt);
+  if (!confirmation || !current()) return null;
+  if (!confirmation.confirmed) {
+    const finalObserved = confirmation.state?.item ? "a different track" : "no current track";
+    throw new Error(`Spotify acknowledged two ${source} requests but still reported ${finalObserved}. Your cue position was preserved; press Retry.`);
+  }
+  return confirmation.state;
 }
 
 function rememberPlaybackExpectation(request, deviceId, issuedAt) {
@@ -3268,6 +3431,7 @@ function deferPlaybackMismatch(state) {
 function queueTransport(action, operation, retry, intent = true) {
   const generation = intent ? ++transportGeneration : transportGeneration;
   if (intent) {
+    deferredTransportIntent++;
     resetPlaybackConfirmation();
     transportPending = true;
     transportIntentKind = action;
@@ -3275,6 +3439,7 @@ function queueTransport(action, operation, retry, intent = true) {
     cancelIdleCheck();
     idleBlocked = false;
     idleFailure = null;
+    idleWakeAvailable = false;
   }
   const current = () => generation === transportGeneration && !erasingBrowser;
   const task = transportQueue.then(async () => {
@@ -3303,12 +3468,26 @@ function queueTransport(action, operation, retry, intent = true) {
   return task;
 }
 
+function deferUntilTrackCommandSettles(operation) {
+  if (!trackConfirmationPending || !transportPending ||
+      !["Start", "Resume"].includes(transportIntentKind)) return null;
+  const generation = transportGeneration;
+  const sequence = ++deferredTransportIntent;
+  return transportQueue.then(() => {
+    if (sequence !== deferredTransportIntent || generation !== transportGeneration || erasingBrowser) return false;
+    return operation();
+  });
+}
+
 function invalidateTransportWork() {
+  deferredTransportIntent++;
   resetPlaybackConfirmation();
   clearIdlePlayback(true);
   idleTrack = null;
   idleBlocked = true;
   idleFailure = null;
+  idleWakeAvailable = false;
+  spotifyWakePending = null;
   updateIdleControls();
   transportGeneration++;
   volumeSequence++;
@@ -3366,12 +3545,72 @@ function scheduleReconciliation() {
   clearTimeout(reconcileTimer);
   reconcileTimer = null;
   const idleOwnsPausedSong = !!idlePlayback && nowPlaying?.paused && idleResume?.uuid === nowPlaying.uuid;
-  if (nowPlaying && !erasingBrowser && !idleOwnsPausedSong) {
+  if (nowPlaying && !nowPlaying.detached && !erasingBrowser && !idleOwnsPausedSong) {
     reconcileTimer = setTimeout(async () => {
       if (document.visibilityState !== "hidden") await reconcilePlayback();
       scheduleReconciliation();
     }, nowPlaying.paused ? PAUSED_PLAYBACK_RECONCILE_MS : PLAYBACK_RECONCILE_MS);
   }
+}
+
+function syncTrackedPlaybackState(state) {
+  activeDeviceCapabilities = state.device || activeDeviceCapabilities;
+  if (state.device?.id) activeDeviceId = state.device.id;
+  updateVolumeControls();
+  nowPlaying.disallows = state.actions?.disallows || {};
+  nowPlaying.detached = false;
+  nowPlaying.paused = !state.is_playing;
+  document.querySelectorAll(".cell.playing").forEach(cell => cell.classList.toggle("paused", nowPlaying.paused));
+  if (progress && Number.isFinite(state.progress_ms)) {
+    progress.startOffsetMs = state.progress_ms;
+    progress.elapsedAtPause = 0;
+    progress.baseTime = performance.now();
+    progress.paused = !state.is_playing;
+    if (progress.paused) cancelFade();
+    armStopDeadline();
+    renderProgress();
+    if (!progress.paused) scheduleProgressTick();
+  }
+  updatePauseBtn();
+}
+
+function preserveTrackedPlaybackPosition() {
+  cancelFade();
+  clearTimeout(stopDeadlineTimer);
+  clearTimeout(manualStopTimer);
+  clearTimeout(reconcileTimer);
+  stopDeadlineTimer = manualStopTimer = reconcileTimer = null;
+  stopDeadlineKey = null;
+  cueFineGen++;
+  hideCueFine();
+  if (!nowPlaying) return;
+  nowPlaying.detached = true;
+  nowPlaying.disallows = {};
+  setPlaybackPaused(true);
+}
+
+function reportPlaybackControlLoss(state) {
+  const missingPlayback = !state?.item;
+  recordPlaybackDiagnostic("track-control-lost", {
+    source: "reconcile",
+    stage: "reconciliation",
+    outcome: missingPlayback ? "missing-playback" : "different-playback",
+    ...diagnosticStateDetails(state, activeDeviceCapabilities, new Set(currentLocalTrackIds())),
+  });
+  resetPlaybackConfirmation();
+  clearIdlePlayback(true);
+  idleBlocked = true;
+  idleFailure = null;
+  idleWakeAvailable = false;
+  deferredTransportIntent++;
+  transportGeneration++;
+  volumeSequence++;
+  preserveTrackedPlaybackPosition();
+  updateIdleControls();
+  const explanation = missingPlayback
+    ? "Spotify stopped reporting the requested track. Your cue position was preserved; press Retry to restart it on the selected device."
+    : "Spotify consistently reported a different track. Your cue position was preserved; press Retry to take control again.";
+  reportTransportFailure("Playback", new Error(explanation), resumePlayback);
 }
 
 async function reconcilePlayback() {
@@ -3395,36 +3634,11 @@ async function reconcilePlayback() {
     }
     if (!playbackStateMatches(state)) {
       if (deferPlaybackMismatch(state)) return true;
-      const missingPlayback = !state?.item;
-      cancelFade();
-      invalidateTransportWork();
-      if (missingPlayback) {
-        reportTransportFailure("Playback", new Error(
-          "Spotify acknowledged the command but did not report the requested track on the selected device. Retry the tile or choose another Spotify device.",
-        ));
-      } else {
-        showToast("Spotify consistently reported a different track. Sarcastaball stopped cue control; select a tile to take it back.");
-      }
+      reportPlaybackControlLoss(state);
       return true;
     }
     resetPlaybackConfirmation();
-    activeDeviceCapabilities = state.device || activeDeviceCapabilities;
-    if (state.device?.id) activeDeviceId = state.device.id;
-    updateVolumeControls();
-    nowPlaying.disallows = state.actions?.disallows || {};
-    nowPlaying.paused = !state.is_playing;
-    document.querySelectorAll(".cell.playing").forEach(cell => cell.classList.toggle("paused", nowPlaying.paused));
-    if (progress && Number.isFinite(state.progress_ms)) {
-      progress.startOffsetMs = state.progress_ms;
-      progress.elapsedAtPause = 0;
-      progress.baseTime = performance.now();
-      progress.paused = !state.is_playing;
-      if (progress.paused) cancelFade();
-      armStopDeadline();
-      renderProgress();
-      if (!progress.paused) scheduleProgressTick();
-    }
-    updatePauseBtn();
+    syncTrackedPlaybackState(state);
     scheduleIdleCheck();
     return true;
   } catch (error) {
@@ -3439,7 +3653,9 @@ document.addEventListener("visibilitychange", () => {
     keepAlive: idleEnabled(),
   });
   cancelIdleCheck();
+  if (document.visibilityState === "hidden") markSpotifyWakeHidden();
   if (document.visibilityState === "visible") {
+    completeSpotifyWakeReturn();
     if (nowPlaying) void reconcilePlayback();
     if (idleReady) {
       idleBlocked = false;
@@ -3449,12 +3665,14 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => {
   recordPlaybackDiagnostic("page-lifecycle", { stage: "pagehide" });
+  markSpotifyWakeHidden();
   idlePageActive = false;
   cancelIdleCheck();
 });
 window.addEventListener("pageshow", event => {
   recordPlaybackDiagnostic("page-lifecycle", { stage: event.persisted ? "pageshow-restored" : "pageshow" });
   idlePageActive = true;
+  completeSpotifyWakeReturn();
   if (event.persisted && idleReady && document.visibilityState === "visible") {
     idleBlocked = false;
     void checkIdlePlayback();
@@ -3475,6 +3693,7 @@ async function ensureDevice() {
     updateVolumeControls();
     return active.id;
   }
+  if (!active && stored && selectedDeviceIsIpad(stored)) throw new SelectedIpadUnavailableError();
   throw new Error("No active Spotify device. Open Spotify on your phone first.");
 }
 
@@ -3517,8 +3736,9 @@ function effectiveFadeOutSec(cell) {
 
 function setLatency(ms, ok = true) {
   const p = document.getElementById("latency-pill");
-  if (ms == null) { p.textContent = "— ms"; p.dataset.state = "none"; return; }
-  p.textContent = `${Math.round(ms)} ms`;
+  const value = document.getElementById("latency-value");
+  if (ms == null) { value.textContent = "— ms"; p.dataset.state = "none"; return; }
+  value.textContent = `${Math.round(ms)} ms`;
   p.dataset.state = !ok ? "error" : (ms < 250 ? "ready" : ms < 600 ? "warn" : "error");
 }
 
@@ -3552,8 +3772,13 @@ async function startPlayback(cell) {
     if (!permitted()) return;
     const t0 = performance.now();
     const issuedAt = Date.now();
+    const retryTransientFailure = shouldConfirmTrackPlayback(dev);
+    let started;
     try {
-      if (!await playOnDevice(dev, playbackRequest.body, permitted, null, "start")) return;
+      started = await playOnDevice(
+        dev, playbackRequest.body, permitted, null, "start", retryTransientFailure,
+      );
+      if (!started) return;
     } catch (error) { setLatency(performance.now() - t0, false); throw error; }
     if (!current()) return;
     recordPlaybackDiagnostic("transport-intent", { source: "start", stage: "acknowledged" });
@@ -3568,9 +3793,28 @@ async function startPlayback(cell) {
     document.querySelectorAll(".cell").forEach(tile => {
       if (tile.dataset.pbuuid === snapshot.dataset.pbuuid) tile.classList.add("playing");
     });
-    markCellPlayed(snapshot);
     if (canVolume && effFadeIn > 0) doFade(0, targetVol, effFadeIn * 1000);
-  }, () => startPlayback(snapshot));
+    if (shouldConfirmTrackPlayback(dev)) {
+      trackConfirmationPending = true;
+      try {
+        const confirmedState = await confirmTrackPlayback(
+          dev, playbackRequest, permitted, "start", started, performance.now(),
+        );
+        if (!confirmedState || !current()) return;
+        resetPlaybackConfirmation();
+        syncTrackedPlaybackState(confirmedState);
+        scheduleIdleCheck();
+      } catch (error) {
+        if (current() && nowPlaying?.uuid === snapshot.dataset.pbuuid) preserveTrackedPlaybackPosition();
+        throw error;
+      } finally {
+        trackConfirmationPending = false;
+      }
+    }
+    markCellPlayed(snapshot);
+  }, () => nowPlaying?.uuid === snapshot.dataset.pbuuid && nowPlaying.detached
+    ? resumePlayback()
+    : startPlayback(snapshot));
 }
 
 // =====================================================================
@@ -3662,6 +3906,8 @@ function currentLocalTrackIds() {
 }
 
 async function pausePlayback() {
+  const deferred = deferUntilTrackCommandSettles(pausePlayback);
+  if (deferred) return deferred;
   return queueTransport("Pause", async current => {
     if (nowPlaying?.disallows?.pausing) throw new Error("Spotify currently disallows pausing this item.");
     const pausedTrackIds = currentLocalTrackIds();
@@ -3692,17 +3938,26 @@ async function resumePlayback() {
     if (nowPlaying?.disallows?.resuming) throw new Error("Spotify currently disallows resuming this item.");
     const dev = await ensureDevice();
     if (!permitted()) return;
+    const retryTransientFailure = shouldConfirmTrackPlayback(dev);
     if (progress?.stopFiring && canControlVolume()) {
       await sendVolume(cellEffectiveVolumePct(nowPlaying.uuid), permitted);
     }
     if (!permitted()) return;
     const restorePosition = Math.max(0, Math.min(progress?.durationMs || Infinity, Math.round(currentPositionMs())));
-    const restore = idleResume?.uuid === nowPlaying.uuid
-      ? await buildTrackPlayRequest(idleResume.trackId, restorePosition, permitted)
+    const explicitRestore = idleResume?.uuid === nowPlaying.uuid || nowPlaying.detached ||
+      retryTransientFailure;
+    const restoreTrackId = idleResume?.uuid === nowPlaying.uuid
+      ? idleResume.trackId
+      : playingSnapshot?.trackid;
+    const restore = explicitRestore
+      ? await buildTrackPlayRequest(restoreTrackId, restorePosition, permitted)
       : null;
-    if (idleResume?.uuid === nowPlaying.uuid && (!restore || !permitted())) return;
+    if (explicitRestore && (!restore || !permitted())) return;
     const issuedAt = Date.now();
-    if (!await playOnDevice(dev, restore?.body || null, permitted, null, "resume")) return;
+    const started = await playOnDevice(
+      dev, restore?.body || null, permitted, null, "resume", retryTransientFailure,
+    );
+    if (!started) return;
     if (!current() || !nowPlaying) return;
     recordPlaybackDiagnostic("transport-intent", { source: "resume", stage: "acknowledged" });
     if (restore && playingSnapshot) {
@@ -3712,11 +3967,30 @@ async function resumePlayback() {
     }
     clearIdlePlayback(true);
     setPlaybackPaused(false);
-    scheduleReconciliation();
-    rememberPlaybackExpectation(restore || {
+    nowPlaying.detached = false;
+    const expectation = restore || {
       requestedTrackId: playingSnapshot.trackid,
       resolvedTrackId: playingSnapshot.spotifyTrackId,
-    }, dev, issuedAt);
+      body: null,
+    };
+    rememberPlaybackExpectation(expectation, dev, issuedAt);
+    if (shouldConfirmTrackPlayback(dev)) {
+      trackConfirmationPending = true;
+      try {
+        const confirmedState = await confirmTrackPlayback(
+          dev, expectation, permitted, "resume", started, performance.now(),
+        );
+        if (!confirmedState || !current()) return;
+        resetPlaybackConfirmation();
+        syncTrackedPlaybackState(confirmedState);
+      } catch (error) {
+        if (current() && nowPlaying) preserveTrackedPlaybackPosition();
+        throw error;
+      } finally {
+        trackConfirmationPending = false;
+      }
+    }
+    scheduleReconciliation();
     armStopDeadline();
   }, resumePlayback);
 }
@@ -6598,6 +6872,7 @@ async function refreshDevices(listId = "device-list") {
           setNowPlaying(null);
           localStorage.setItem(LS_DEVICE, d.id);
           localStorage.setItem(LS_DEVICE_NAME, d.name);
+          spotifyWakePending = null;
           activeDeviceId = d.id;
           activeDeviceCapabilities = d;
           updateVolumeControls();
@@ -6964,6 +7239,7 @@ window.addEventListener("storage", e => {
     cancelIdleCheck();
     idleBlocked = false;
     idleFailure = null;
+    idleWakeAvailable = false;
     updateIdleControls();
     if (idleReady && idleEnabled()) void checkIdlePlayback();
   } else if (db && e.key === lineupStorageKey() && !browserCleanupActive()) {

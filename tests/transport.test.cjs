@@ -120,7 +120,10 @@ test("Start reactivates an inactive selected device and retries once after NO_AC
   let active = false;
   let attempts = 0;
   const noActive = app.run("new SpotifyError(404, 'NO_ACTIVE_DEVICE', null)");
-  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.run(`
+    activeDeviceCapabilities = { id: "synthetic-device", supports_volume: false };
+    waitForDeviceActivation = async current => current();
+  `);
   app.window.testApi = async (path, options = {}) => {
     requests.push({ path, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null });
     if (path.startsWith("/me/player/play")) {
@@ -138,6 +141,7 @@ test("Start reactivates an inactive selected device and retries once after NO_AC
       active = true;
       return null;
     }
+    if (path === "/me/player") return playbackState(true);
     throw new Error(`Unexpected synthetic request: ${path}`);
   };
 
@@ -148,6 +152,7 @@ test("Start reactivates an inactive selected device and retries once after NO_AC
     "/me/player/devices",
     "/me/player",
     "/me/player/play?device_id=synthetic-device",
+    "/me/player",
   ]);
   assert.deepEqual(requests[2].body, { device_ids: ["synthetic-device"], play: false });
   assert.deepEqual(requests[0].body, requests[3].body);
@@ -161,7 +166,10 @@ test("a reasonless 404 reactivates a device whose active flag is stale", async t
   const unavailable = app.run("new SpotifyError(404, null, null)");
   let attempts = 0;
   let transfers = 0;
-  app.run("activeDeviceCapabilities = { id: 'synthetic-device', supports_volume: false }");
+  app.run(`
+    activeDeviceCapabilities = { id: "synthetic-device", supports_volume: false };
+    waitForDeviceActivation = async current => current();
+  `);
   app.window.testApi = async (path, options = {}) => {
     paths.push(path);
     if (path.startsWith("/me/player/play")) {
@@ -179,6 +187,7 @@ test("a reasonless 404 reactivates a device whose active flag is stale", async t
       transfers++;
       return null;
     }
+    if (path === "/me/player") return playbackState(true);
     throw new Error(`Unexpected synthetic request: ${path}`);
   };
 
@@ -190,8 +199,83 @@ test("a reasonless 404 reactivates a device whose active flag is stale", async t
     "/me/player/devices",
     "/me/player",
     "/me/player/play?device_id=synthetic-device",
+    "/me/player",
   ]);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+});
+
+test("a selected iPad Start retries one transient Spotify 502", async t => {
+  const app = player(t);
+  const requests = [];
+  let attempts = 0;
+  const gateway = app.run("new SpotifyError(502, null, null)");
+  app.run(`
+    activeDeviceCapabilities = {
+      id: "synthetic-device", name: "Synthetic iPad",
+      is_restricted: false, supports_volume: false
+    };
+    waitForDeviceActivation = async current => current();
+  `);
+  app.window.testApi = async (path, options = {}) => {
+    requests.push({ path, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null });
+    if (path.startsWith("/me/player/play")) {
+      attempts++;
+      if (attempts === 1) throw gateway;
+      return null;
+    }
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: true,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") return null;
+    if (path === "/me/player") return playbackState(true);
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.equal(attempts, 2);
+  assert.deepEqual(requests.map(request => request.path), [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player/devices",
+    "/me/player",
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player",
+  ]);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.run("nowPlaying.detached"), false);
+  assert.deepEqual(
+    Array.from(
+      app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'play-failed').map(entry => [entry.purpose, entry.attempt, entry.status])"),
+      entry => Array.from(entry),
+    ),
+    [["start", 1, 502]],
+  );
+});
+
+test("a non-iPad Start surfaces a transient Spotify 502 without retrying", async t => {
+  const app = player(t);
+  let attempts = 0;
+  const gateway = app.run("new SpotifyError(502, null, null)");
+  app.run(`
+    activeDeviceCapabilities = {
+      id: "synthetic-device", name: "Synthetic Laptop",
+      is_restricted: false, supports_volume: false
+    };
+  `);
+  app.window.testApi = async path => {
+    if (path.startsWith("/me/player/play")) {
+      attempts++;
+      throw gateway;
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), false);
+  assert.equal(attempts, 1);
+  assert.equal(app.run("nowPlaying"), null);
+  assert.match(app.window.document.getElementById("transport-status").textContent, /Spotify 502/i);
 });
 
 test("a genuine playback 404 remains visible after one bounded recovery retry", async t => {
@@ -388,7 +472,206 @@ test("a transient post-Start null state does not surrender cue control", async t
   assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
 });
 
-test("only spaced consistent mismatches end local cue control", async t => {
+test("iPad Start confirms acknowledged playback and repairs one success-shaped no-op", async t => {
+  const app = player(t);
+  const requests = [];
+  let plays = 0;
+  let state = {
+    is_playing: true,
+    progress_ms: 4000,
+    item: { id: "previous-track" },
+    device: { id: "synthetic-device", name: "Synthetic iPad", supports_volume: false },
+    actions: { disallows: {} },
+  };
+  app.run(`
+    activeDeviceCapabilities = {
+      id: "synthetic-device", name: "Synthetic iPad",
+      is_restricted: false, supports_volume: false
+    };
+    waitForDeviceActivation = async current => current();
+  `);
+  app.window.testApi = async (path, options = {}) => {
+    requests.push({ path, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null });
+    if (path.startsWith("/me/player/play")) {
+      plays++;
+      if (plays === 2) state = playbackState(true);
+      return null;
+    }
+    if (path === "/me/player" && !options.method) return structuredClone(state);
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: true,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") return null;
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), true);
+  assert.equal(plays, 2);
+  assert.deepEqual(requests.map(request => request.path), [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player",
+    "/me/player/devices",
+    "/me/player",
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player",
+  ]);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.run("nowPlaying.paused"), false);
+  assert.equal(app.run("nowPlaying.detached"), false);
+  assert.deepEqual(
+    Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation').map(entry => entry.outcome)")),
+    ["unconfirmed", "confirmed"],
+  );
+});
+
+test("a quick Pause waits for iPad Start confirmation and its bounded retry", async t => {
+  const app = player(t);
+  const confirmationStarted = deferred();
+  const releaseConfirmation = deferred();
+  const requests = [];
+  let plays = 0;
+  let waits = 0;
+  let state = {
+    is_playing: true,
+    progress_ms: 4000,
+    item: { id: "previous-track" },
+    device: { id: "synthetic-device", name: "Synthetic iPad", supports_volume: false },
+    actions: { disallows: {} },
+  };
+  app.run(`
+    localStorage.setItem(LS_IPAD_KEEPALIVE, "0");
+    activeDeviceCapabilities = {
+      id: "synthetic-device", name: "Synthetic iPad",
+      is_restricted: false, supports_volume: false
+    };
+  `);
+  app.window.testWait = async current => {
+    waits++;
+    if (waits === 1) {
+      confirmationStarted.resolve();
+      await releaseConfirmation.promise;
+    }
+    return current();
+  };
+  app.run("waitForDeviceActivation = current => window.testWait(current)");
+  app.window.testApi = async (path, options = {}) => {
+    requests.push({ path, method: options.method || "GET" });
+    if (path.startsWith("/me/player/play")) {
+      plays++;
+      if (plays === 2) state = playbackState(true);
+      return null;
+    }
+    if (path === "/me/player" && !options.method) return structuredClone(state);
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: true,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") return null;
+    if (path === "/me/player/pause") {
+      state = { ...playbackState(false), progress_ms: 1000 };
+      return null;
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  const start = app.run("startPlayback(window.testCell)");
+  await confirmationStarted.promise;
+  const pause = app.run("pausePlayback()");
+  releaseConfirmation.resolve();
+
+  assert.equal(await start, true);
+  assert.equal(await pause, true);
+  assert.equal(plays, 2);
+  assert.deepEqual(requests.map(request => request.path), [
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player",
+    "/me/player/devices",
+    "/me/player",
+    "/me/player/play?device_id=synthetic-device",
+    "/me/player",
+    "/me/player/pause",
+  ]);
+  assert.deepEqual(
+    Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation').map(entry => entry.outcome)")),
+    ["unconfirmed", "confirmed"],
+  );
+  assert.equal(app.run("nowPlaying.paused"), true);
+});
+
+test("failed iPad Start preserves progress and Retry explicitly restores that cue", async t => {
+  const app = player(t);
+  const plays = [];
+  let recover = false;
+  let state = {
+    is_playing: true,
+    progress_ms: 4000,
+    item: { id: "previous-track" },
+    device: { id: "synthetic-device", name: "Synthetic iPad", supports_volume: false },
+    actions: { disallows: {} },
+  };
+  app.window.syntheticClock = 0;
+  app.run(`
+    performance.now = () => window.syntheticClock;
+    activeDeviceCapabilities = {
+      id: "synthetic-device", name: "Synthetic iPad",
+      is_restricted: false, supports_volume: false
+    };
+    waitForDeviceActivation = async (current, delay = DEVICE_ACTIVATION_SETTLE_MS) => {
+      window.syntheticClock += delay;
+      return current();
+    };
+  `);
+  app.window.testApi = async (path, options = {}) => {
+    if (path.startsWith("/me/player/play")) {
+      const body = JSON.parse(options.body);
+      plays.push(body);
+      if (recover) {
+        state = {
+          ...playbackState(true),
+          progress_ms: body.position_ms,
+        };
+      }
+      return null;
+    }
+    if (path === "/me/player" && !options.method) return structuredClone(state);
+    if (path === "/me/player/devices") {
+      return { devices: [{
+        id: "synthetic-device", name: "Synthetic iPad", is_active: true,
+        is_restricted: false, supports_volume: false,
+      }] };
+    }
+    if (path === "/me/player" && options.method === "PUT") return null;
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+
+  assert.equal(await app.run("startPlayback(window.testCell)"), false);
+  assert.equal(plays.length, 2);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.run("nowPlaying.paused"), true);
+  assert.equal(app.run("nowPlaying.detached"), true);
+  assert.equal(Math.round(app.run("currentPositionMs()")), 2000);
+  const status = app.window.document.getElementById("transport-status");
+  assert.match(status.textContent, /two start requests.*position was preserved/i);
+  assert.equal(status.querySelector("button")?.textContent, "Retry");
+
+  recover = true;
+  assert.equal(await app.run("resumePlayback()"), true);
+  assert.equal(plays.length, 3);
+  assert.deepEqual(plays[2], {
+    uris: ["spotify:track:synthetic-track"],
+    position_ms: 2000,
+  });
+  assert.equal(app.run("nowPlaying.paused"), false);
+  assert.equal(app.run("nowPlaying.detached"), false);
+  assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
+});
+
+test("only spaced consistent mismatches pause local cue control and preserve progress", async t => {
   const app = player(t);
   let clock = 0;
   app.window.performance.now = () => clock;
@@ -407,11 +690,18 @@ test("only spaced consistent mismatches end local cue control", async t => {
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
   clock = 1500;
   assert.equal(await app.run("reconcilePlayback()"), true);
-  assert.equal(app.run("nowPlaying"), null);
-  assert.match(app.window.document.getElementById("toast").textContent, /consistently reported a different track/i);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.run("nowPlaying.paused"), true);
+  assert.equal(app.run("nowPlaying.detached"), true);
+  assert.equal(app.run("progress.paused"), true);
+  assert.equal(Math.round(app.run("currentPositionMs()")), 1500);
+  const status = app.window.document.getElementById("transport-status");
+  assert.equal(status.classList.contains("hidden"), false);
+  assert.match(status.textContent, /different track.*position was preserved/i);
+  assert.equal(status.querySelector("button")?.textContent, "Retry");
 });
 
-test("sustained missing playback is reported as unconfirmed, not external control", async t => {
+test("sustained missing playback preserves the local cue for an explicit retry", async t => {
   const app = player(t);
   let clock = 0;
   app.window.performance.now = () => clock;
@@ -420,10 +710,12 @@ test("sustained missing playback is reported as unconfirmed, not external contro
   assert.equal(await app.run("reconcilePlayback()"), true);
   clock = 1500;
   assert.equal(await app.run("reconcilePlayback()"), true);
-  assert.equal(app.run("nowPlaying"), null);
+  assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
+  assert.equal(app.run("nowPlaying.paused"), true);
+  assert.equal(app.run("nowPlaying.detached"), true);
   const status = app.window.document.getElementById("transport-status");
   assert.equal(status.classList.contains("hidden"), false);
-  assert.match(status.textContent, /acknowledged the command but did not report the requested track/i);
+  assert.match(status.textContent, /stopped reporting the requested track.*position was preserved/i);
   assert.doesNotMatch(app.window.document.getElementById("toast")?.textContent || "", /outside this controller/i);
 });
 
