@@ -187,6 +187,7 @@ test("export-before-erase preserves work until acknowledgement and clears peer t
     localStorage.setItem("s9000.auth", JSON.stringify({ clientId: "synthetic-client", refreshToken: "synthetic-browser-only-secret" }));
   });
   await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "Spotify", exact: true }).click();
   await page.locator("#btn-logout-spotify").click();
   const exported = await exportForLogout(page);
   expect(scalar(SQL, exported, `SELECT songCellColorRaw FROM Playback WHERE playbackUUIDRaw='${ids.firstPlayback}'`)).toBe(2);
@@ -196,6 +197,7 @@ test("export-before-erase preserves work until acknowledgement and clears peer t
   await page.locator("#btn-logout-cancel").click();
   expect(await page.evaluate(() => db !== null)).toBe(true);
   await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "Spotify", exact: true }).click();
   await page.locator("#btn-logout-spotify").click();
   await expect(page.locator("#btn-logout-saved")).toBeHidden();
   await exportForLogout(page);

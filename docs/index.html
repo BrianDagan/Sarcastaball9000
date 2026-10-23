@@ -176,98 +176,127 @@
   <!-- Settings / setup modal -->
   <div id="modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="setup-title" tabindex="-1">
     <div class="modal-card">
-      <h2 id="setup-title">Setup</h2>
+      <h2 id="setup-title">Settings</h2>
 
-      <section>
-        <h3>1. Spotify auth</h3>
-        <p class="hint">You need your own Spotify Premium account and developer app. Enter that app's <strong>Client ID</strong>, then log in. No client secret is needed. In your
-          <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">Spotify dashboard (opens in a new tab)</a>,
-          add this page's URL as a Redirect URI:</p>
-        <code id="redirect-uri-display" class="redirect-uri"></code>
-        <label>Client ID
-          <input id="in-client-id" type="text" placeholder="Spotify Client ID" />
-        </label>
-        <button id="btn-login-spotify" class="primary">Log in with Spotify</button>
-        <button id="btn-logout-spotify" type="button" class="secondary hidden">Log out</button>
-        <div id="auth-status" class="status" role="status"></div>
-        <p class="hint">This website's files are public. Your Spotify app's Development Mode allowlist controls API access, not access to this page. Keep only your intended account on that list.</p>
-        <p class="hint">Protected sign-in requires Web Locks in a secure browser context: HTTPS or loopback HTTP. Browser and native-app compatibility have not been comprehensively verified.</p>
-        <p class="hint"><strong>Only explicitly confirmed logout may clear all app data.</strong> Startup, reload, rejected sign-in attempts and token/network failures must preserve your library, edits, settings and valid remembered sign-in. Reconnection may be needed if Spotify rejects authorization; keep your Client ID and library.</p>
-        <p class="hint">Logout offers export, cancellation or explicit discard before erasing this app's cached database, edits, settings and credentials. Verify any download before confirming erase. To revoke the Spotify grant too, remove the app in your Spotify account settings.</p>
-      </section>
+      <div id="settings-tabs" class="settings-tabs" role="tablist" aria-label="Settings sections">
+        <button id="settings-tab-spotify" type="button" role="tab" aria-selected="false"
+          aria-controls="settings-panel-spotify" tabindex="-1" data-settings-tab="spotify">Spotify</button>
+        <button id="settings-tab-library" type="button" role="tab" aria-selected="false"
+          aria-controls="settings-panel-library" tabindex="-1" data-settings-tab="library">Library</button>
+        <button id="settings-tab-device" type="button" role="tab" aria-selected="false"
+          aria-controls="settings-panel-device" tabindex="-1" data-settings-tab="device">Device</button>
+        <button id="settings-tab-awake" type="button" role="tab" aria-selected="true"
+          aria-controls="settings-panel-awake" tabindex="0" data-settings-tab="awake">Awake</button>
+        <button id="settings-tab-audio" type="button" role="tab" aria-selected="false"
+          aria-controls="settings-panel-audio" tabindex="-1" data-settings-tab="audio">Audio</button>
+        <button id="settings-tab-app" type="button" role="tab" aria-selected="false"
+          aria-controls="settings-panel-app" tabindex="-1" data-settings-tab="app">App</button>
+        <button id="settings-tab-about" type="button" role="tab" aria-selected="false"
+          aria-controls="settings-panel-about" tabindex="-1" data-settings-tab="about">About</button>
+      </div>
 
-      <section>
-        <h3>2. Database</h3>
-        <p class="hint">Export your own SQLite library from <strong>Sports Audio DJ</strong>, then pick the <code>.sqlite</code> file. Keep an independent backup of the original. Specific Sports Audio DJ versions have not been verified; no starter database is included.</p>
-        <p id="db-picker-hint" class="hint">All file types are shown to avoid device-specific filtering. The file can have any name; only a compatible SQLite database will load.</p>
-        <input id="in-db-file" type="file" aria-label="Choose a Sports Audio DJ SQLite database" aria-describedby="db-picker-hint" />
-        <button id="btn-export-backup" class="secondary">Download pre-edit backup</button>
-        <div id="db-status" class="status" role="status"></div>
-      </section>
+      <div class="settings-panels">
+        <section id="settings-panel-spotify" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-spotify" tabindex="0" hidden>
+          <h3>Spotify sign-in</h3>
+          <p class="hint">Use your own Spotify Premium account and developer app. Enter its <strong>Client ID</strong>; no client secret is needed. Add this page's URL in the
+            <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener noreferrer">Spotify dashboard (opens in a new tab)</a>.</p>
+          <code id="redirect-uri-display" class="redirect-uri"></code>
+          <label>Client ID
+            <input id="in-client-id" type="text" placeholder="Spotify Client ID" />
+          </label>
+          <button id="btn-login-spotify" class="primary">Log in with Spotify</button>
+          <button id="btn-logout-spotify" type="button" class="secondary hidden">Log out</button>
+          <div id="auth-status" class="status" role="status"></div>
+          <details class="settings-details">
+            <summary>Sign-in, privacy and logout notes</summary>
+            <p class="hint">This site's files are public. Your Spotify Development Mode allowlist controls API access; keep only the intended account on it. Protected sign-in requires Web Locks on HTTPS or loopback HTTP.</p>
+            <p class="hint"><strong>Only explicitly confirmed logout may clear all app data.</strong> Reloads, rejected sign-ins and token/network failures preserve the library, edits, settings and valid remembered sign-in.</p>
+            <p class="hint">Logout offers export, cancellation or explicit discard. Revoke the Spotify grant separately in Spotify account settings if needed.</p>
+          </details>
+        </section>
 
-      <section>
-        <h3>3. Active device</h3>
-        <p class="hint">Open Spotify on the device you want to control, play any song briefly, then refresh.</p>
-        <div id="device-list" class="device-list"></div>
-        <button id="btn-refresh-devices">Refresh devices</button>
-      </section>
+        <section id="settings-panel-library" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-library" tabindex="0" hidden>
+          <h3>SQLite library</h3>
+          <p class="hint">Export your own SQLite library from <strong>Sports Audio DJ</strong>, then choose it here. Keep an independent original backup; no starter database is included.</p>
+          <p id="db-picker-hint" class="hint">All file types are shown to avoid device-specific filtering. The filename does not matter; only a compatible SQLite database loads.</p>
+          <input id="in-db-file" type="file" aria-label="Choose a Sports Audio DJ SQLite database" aria-describedby="db-picker-hint" />
+          <button id="btn-export-backup" class="secondary">Download pre-edit backup</button>
+          <div id="db-status" class="status" role="status"></div>
+        </section>
 
-      <section>
-        <h3>Playback</h3>
-        <label><input id="in-ipad-keepalive" type="checkbox" /> Keep iPad Spotify awake</label>
-        <p class="hint">Automatic only for the selected Spotify device whose name contains "iPad". While this page is visible, idle playback, Pause and Stop use the ten-minute silence track. Resume restores your paused song. Turn this off to stop idle silence. Keep Repeat off in Spotify; queue or Autoplay settings can still play other audio after the last silence track ends. Closing or hiding this page stops renewal, not necessarily Spotify playback.</p>
-        <p id="volume-support-hint" class="hint hidden">Browser volume and volume fades are unavailable on iPad/iPhone or a device that disallows them. Use physical or Spotify volume controls. Saved values are retained, and end cues still stop playback.</p>
-        <label>Default volume: <span id="vol-label">70</span>%
-          <input id="in-volume" type="range" min="0" max="100" step="1" value="70" class="full-width" />
-        </label>
-        <p class="hint">Used when starting any track. Overrides the value stored in the DB.</p>
-        <label>Default fade-in: <span id="fade-in-label">0</span>s
-          <input id="in-fade-in" type="range" min="0" max="10" step="1" value="0" class="full-width" />
-        </label>
-        <label>Default fade-out: <span id="fade-out-label">2</span>s
-          <input id="in-fade-out" type="range" min="0" max="10" step="1" value="2" class="full-width" />
-        </label>
-        <p class="hint">Fade-out runs near the end cue. Spotify network commands and browser scheduling are best-effort: exact silence timing and background-tab stops are not guaranteed. A tile's own fade value overrides these defaults.</p>
-        <button id="btn-download-playback-diagnostics" type="button" class="secondary">Download playback diagnostics</button>
-        <p class="hint">After a playback or keep-awake failure, leave this app open and download this generated JSON file. It contains recent sanitized intent, timing and Spotify status categories only. It excludes credentials, Client IDs, account/device/track identifiers and names, database contents, browser-storage dumps and raw Spotify responses.</p>
-        <div id="playback-diagnostics-status" class="status" role="status"></div>
-      </section>
+        <section id="settings-panel-device" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-device" tabindex="0" hidden>
+          <h3>Active Spotify device</h3>
+          <p class="hint">Open Spotify on the output device, play any song briefly, then refresh and choose it.</p>
+          <div id="device-list" class="device-list"></div>
+          <button id="btn-refresh-devices">Refresh devices</button>
+        </section>
 
-      <section>
-        <h3>Display</h3>
-        <button id="btn-fullscreen-help" type="button" class="secondary">Home Screen and full screen help</button>
-      </section>
+        <section id="settings-panel-awake" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-awake" tabindex="0">
+          <h3>iPad keep-awake</h3>
+          <label><input id="in-ipad-keepalive" type="checkbox" /> Keep iPad Spotify awake</label>
+          <p class="hint">For the selected device whose name contains "iPad", visible-page idle playback, Pause and Stop use the ten-minute silence track. Resume restores the paused song. Keep Repeat off. Closing or hiding the app stops renewal, so it cannot guarantee silence remains active; Queue or Autoplay can still act if renewal is missed.</p>
+          <p class="hint"><strong>Keep the iPad volume at least one notch above zero.</strong> Spotify on iPad can pause at zero volume; the silence track itself has no audible content. Sarcastaball reads reported volume only for diagnostics and never sends iPad volume commands.</p>
+          <div class="settings-actions">
+            <button id="btn-share-playback-diagnostics" type="button" class="primary">Share diagnostics</button>
+            <button id="btn-download-playback-diagnostics" type="button" class="secondary">Download JSON</button>
+          </div>
+          <p class="hint">Share opens the system sheet for AirDrop, Files or another destination. Nothing is sent automatically. The generated JSON excludes credentials, Client IDs, account/device/track identifiers and names, database contents, storage dumps and raw Spotify responses.</p>
+          <div id="playback-diagnostics-status" class="status" role="status"></div>
+        </section>
 
-      <section>
-        <h3>App updates</h3>
-        <button id="btn-force-refresh-app" type="button" class="secondary">Force refresh app</button>
-        <p class="hint">Downloads the current published Sarcastaball page, script, styles and local runtime assets, then reopens the app. It preserves this browser's Spotify sign-in, selected device, library recovery, unsaved edits and settings. It cannot install changes that have not been published yet.</p>
-        <div id="app-refresh-status" class="status" role="status"></div>
-      </section>
+        <section id="settings-panel-audio" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-audio" tabindex="0" hidden>
+          <h3>Playback defaults</h3>
+          <p id="volume-support-hint" class="hint hidden">Browser volume and volume fades are unavailable on iPad/iPhone or a device that disallows them. Use physical or Spotify controls. Saved values and end-cue pauses remain available.</p>
+          <label>Default volume: <span id="vol-label">70</span>%
+            <input id="in-volume" type="range" min="0" max="100" step="1" value="70" class="full-width" />
+          </label>
+          <p class="hint">Used when starting a track unless that tile has its own value.</p>
+          <label>Default fade-in: <span id="fade-in-label">0</span>s
+            <input id="in-fade-in" type="range" min="0" max="10" step="1" value="0" class="full-width" />
+          </label>
+          <label>Default fade-out: <span id="fade-out-label">2</span>s
+            <input id="in-fade-out" type="range" min="0" max="10" step="1" value="2" class="full-width" />
+          </label>
+          <p class="hint">Network playback and browser timers are best-effort. A tile's own fade value overrides these defaults.</p>
+        </section>
 
-      <section>
-        <h3>Appearance</h3>
-        <label>Default cell color (used for cells set to "App Default")
-          <select id="in-default-color"></select>
-        </label>
-        <p class="hint">The source database uses red by default; this overrides that for the web app only.</p>
-      </section>
+        <section id="settings-panel-app" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-app" tabindex="0" hidden>
+          <h3>Display and app</h3>
+          <button id="btn-fullscreen-help" type="button" class="secondary">Home Screen and full screen help</button>
+          <button id="btn-force-refresh-app" type="button" class="secondary">Force refresh app</button>
+          <p class="hint">Force refresh saves recovery, reloads the published app assets, and preserves Spotify sign-in, selected device, library, unsaved edits and settings.</p>
+          <div id="app-refresh-status" class="status" role="status"></div>
+          <label>Default cell color (for cells set to "App Default")
+            <select id="in-default-color"></select>
+          </label>
+          <p class="hint">The source database defaults to red; this changes only the web app's default.</p>
+        </section>
 
-      <section aria-labelledby="about-title">
-        <h3 id="about-title">About</h3>
-        <p class="hint">A personal Spotify Connect cue controller. Audio plays on your selected Spotify device, not in this browser.</p>
-        <p class="hint">Created by <strong>Brian Dagan</strong>. Original project material is MIT licensed.</p>
-        <p class="hint">
-          <a href="https://github.com/briandagan/Sarcastaball9000" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
-          &middot; <a href="LICENSE.txt" target="_blank" rel="noopener noreferrer">MIT license</a>
-          &middot; <a href="THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">Third-party notices</a>.
-          Links open in a new tab.
-        </p>
-        <p class="hint">Source is publicly available on GitHub. Noindex does not make the site or public source private.</p>
-        <button id="btn-fake-beer" class="secondary">🍺 Buy Me a Fake Beer</button>
-      </section>
+        <section id="settings-panel-about" class="settings-panel" role="tabpanel"
+          aria-labelledby="settings-tab-about" tabindex="0" hidden>
+          <h3 id="about-title">About</h3>
+          <p class="hint">A personal Spotify Connect cue controller. Audio plays on the selected Spotify device, not in this browser.</p>
+          <p class="hint">Created by <strong>Brian Dagan</strong>. Original project material is MIT licensed.</p>
+          <p class="hint">
+            <a href="https://github.com/briandagan/Sarcastaball9000" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
+            &middot; <a href="LICENSE.txt" target="_blank" rel="noopener noreferrer">MIT license</a>
+            &middot; <a href="THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">Third-party notices</a>.
+            Links open in a new tab.
+          </p>
+          <p class="hint">Source is public. Noindex does not make the site or repository private.</p>
+          <button id="btn-fake-beer" class="secondary">🍺 Buy Me a Fake Beer</button>
+        </section>
+      </div>
 
-      <button id="btn-close-modal" class="secondary">Close</button>
+      <div class="settings-footer">
+        <button id="btn-close-modal" type="button" class="secondary">Close</button>
+      </div>
     </div>
   </div>
 

@@ -57,6 +57,7 @@ test("in-app and browser titles are shortened without changing the source-reposi
   await expect(page).toHaveTitle("Sarcastaball");
   await expect(page.locator("#title")).toHaveText("Sarcastaball");
   await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "About", exact: true }).click();
   await expect(page.getByRole("link", { name: "Source on GitHub", exact: true }))
     .toHaveAttribute("href", "https://github.com/briandagan/Sarcastaball9000");
 });

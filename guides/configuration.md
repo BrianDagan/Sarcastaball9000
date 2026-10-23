@@ -254,7 +254,7 @@ a new Start/Resume; Pause, Stop and database export remain available.
 ## Automatic iPad idle silence
 
 This section describes the local feature contract for builds with **Settings ->
-Playback -> Keep iPad Spotify awake**. It is not a claim of public deployment or
+Awake -> Keep iPad Spotify awake**. It is not a claim of public deployment or
 new hardware validation. The preference is on when absent and is saved for this
 origin under `s9000.ipadKeepAlive` (`0` means off); uncheck it to opt out.
 
@@ -293,9 +293,12 @@ playing. When eligible, the app uses a normal Spotify play command for the
 [linked silent catalog track](https://open.spotify.com/track/3mkOlbSv5RYadx0JsjTrKq).
 That ID identifies public catalog content, not an account or device. Metadata is
 resolved in the signed-in account's market; if Spotify relinks the item, playback
-uses the returned playable URI rather than the unavailable original. The track
-is not added as a SQLite library tile; library data, playback flags and stored
-volume/fade values are preserved. Idle playback sends no volume/fade commands.
+uses the returned playable URI rather than the unavailable original. When the
+metadata includes a valid album URI, silence uses that album context with the
+resolved track as its offset, matching the request shape used for normal catalog
+tracks. Direct URI playback is only the metadata fallback. The track is not added
+as a SQLite library tile; library data, playback flags and stored volume/fade
+values are preserved. Idle playback sends no volume/fade commands.
 
 ### Pause, Stop, Resume and opting out
 
@@ -308,16 +311,29 @@ With keep-awake enabled and the selected device eligible:
 - **Stop clears the active tile but starts or continues silent Spotify
   playback. Stop does not stop Spotify while this mode is active.**
 
-Pause and Stop are deliberate handoffs: after Spotify acknowledges the pause,
-the app starts silence even if the next fresh state response still reports the
-same just-paused song as playing. A different track or device still blocks the
-handoff so automatic silence cannot replace unrelated music. The first handoff
-uses one fresh device-list read and one fresh playback-state read after silence
-metadata is available, then one post-command confirmation read. If Spotify
+Pause and Stop are deliberate handoffs. Spotify does not guarantee ordering
+between separate Player API commands, so after the pause acknowledgement the app
+does not immediately race a silence play command against the previous song. If
+fresh state still reports that same song playing on the selected device, the app
+waits for at most three delayed state reads (250, 500 and 750 milliseconds). This
+bounded check runs only for an explicit Pause or Stop; it is not a recurring
+polling loop. If the previous song is still playing after 1.5 seconds, the
+handoff stops and asks you to wait and Retry. A different track or device also
+blocks the handoff so automatic silence cannot replace unrelated music.
+
+After the previous song settles, the first silence handoff uses fresh device and
+playback state and then one post-command confirmation read. If Spotify
 acknowledges the command but does not report silence playing, the app may perform
 one device refresh, one non-playing transfer, one retry and one final confirmation
 only when the observed state is still safe. It never polls activation in a loop
 or retries over different playback.
+
+If Spotify reports the selected iPad volume at zero, automatic silence stops
+before play/recovery retries and asks you to raise the physical volume at least
+one notch. Spotify on iPad may pause playback at zero volume. Sarcastaball records
+only the reported numeric volume and volume-capability boolean in the sanitized
+diagnostic; it does not send an iPad volume command. The silence track itself has
+no audible content.
 
 Automatic idle playback also preserves a locally paused tile. It can, however,
 replace the Spotify playback context of a song paused outside DJDad. DJDad
@@ -378,7 +394,8 @@ This is an optional user-run check with your own eligible account/device, not an
 automated test or a claim that it has passed. Do not make real Spotify playback
 a test-suite side effect.
 
-1. Use a safe listening level set directly on the device/Spotify. Confirm the
+1. Use a safe listening level set directly on the device/Spotify, at least one
+   notch above zero. Confirm the
    intended output is present in Spotify and selected in DJDad, with `iPad` in
    its name. Confirm repeat is Off and review the queue/Autoplay risk first;
    remain able to stop unexpected audio directly.
@@ -395,10 +412,14 @@ a test-suite side effect.
    confirms it is still current. Verify normal Pause/Stop behavior while off,
    the opt-out survives reload, and a nonmatching selected output is not
    automatically kept awake. No sign-in or library reset should be needed.
-5. For any failure, note the exact displayed status/error and HTTP status if
-   shown, whether the selected device remained listed, and whether the page was
-   visible. Redact account/device names, identifiers and authentication details;
-   do not attach personal libraries, browser storage or unreviewed logs.
+5. For any failure, leave the page open and note the exact displayed status/error
+   and HTTP status if shown, whether the selected device remained listed, and
+   whether the page was visible. Use **Settings -> Awake -> Share diagnostics**
+   to open the system share sheet, or **Download JSON** when file sharing is
+   unavailable or you want to inspect the file first. Nothing is sent until you
+   choose a destination. Redact account/device names, identifiers and
+   authentication details; do not attach personal libraries, browser storage or
+   unreviewed logs.
 
 Longer success on one device still does not establish behavior on other
 iPads/browsers or while locked/backgrounded. Use mock Spotify responses for
@@ -430,7 +451,7 @@ have separate storage: keep a database export and sign in/import there if needed
 This does not erase the current browser's data. Fullscreen/Home Screen mode does
 not guarantee background execution, offline Spotify control or exact cue timing.
 
-Setup's **App updates -> Force refresh app** first saves a fresh recovery record,
+**Settings -> App -> Force refresh app** first saves a fresh recovery record,
 downloads the current published HTML, JavaScript, CSS, baseball and paired sql.js
 runtime files with cache revalidation, then reopens the same app. It preserves
 the browser's sign-in, selected device, library, pending edits and settings. If
@@ -528,8 +549,9 @@ Spotify mixing/overlap or public/business-playback software.
 | No active device / Spotify 404 | Sarcastaball makes one device-list check, one transfer with a short settling delay, and one playback retry when Spotify still lists the selected device, including when Spotify omits the inactive-device reason or reports a stale active flag. It does not rapidly poll activation status. If the device is missing or recovery fails, open Spotify there once, return, refresh/reselect if needed, and Retry. Unavailable track/context content still fails after the bounded retry. |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
 | iPad keep-awake unavailable/failed | Check the selected name contains `iPad`, device presence/restrictions, valid authorization and repeat Off; keep the page visible and Retry after resolving the reported cause, without logout/reset. The baseball spins only after Spotify confirms silence is playing. |
-| Coffee is on but silence does not play | Leave the page open after the failure. Open **Settings -> Playback -> Download playback diagnostics** before reloading, then share only that generated JSON file through the agreed reporting channel. It contains a bounded recent history of sanitized intent, timing, device/state booleans and allowlisted Spotify status categories; it excludes credentials, Client IDs, account/device/track identifiers and names, database contents and raw Spotify responses. |
-| Home Screen app appears stale | After downloading playback diagnostics if needed, use **Settings -> App updates -> Force refresh app**. It retrieves only the current published version and preserves browser data; unpublished changes cannot appear until deployment. |
+| Coffee is on but silence does not play | Leave the page open after the failure. Open **Settings -> Awake -> Share diagnostics** before reloading, or use **Download JSON**. Share opens the system sheet so you can choose AirDrop, Files or another destination; nothing is sent automatically, and unsupported browsers download the same file instead. Share only that generated JSON through the agreed reporting channel. It contains a bounded recent history of sanitized intent, timing, reported volume/capability, device/state booleans and allowlisted Spotify status categories; it excludes credentials, Client IDs, account/device/track identifiers and names, database contents and raw Spotify responses. |
+| Spotify reports iPad volume 0 | Raise the physical volume at least one notch and Retry. Sarcastaball does not send volume commands to an iPad; the silence track itself remains acoustically silent. |
+| Home Screen app appears stale | After sharing or downloading playback diagnostics if needed, use **Settings -> App -> Force refresh app**. It retrieves only the current published version and preserves browser data; unpublished changes cannot appear until deployment. |
 | Spotify keeps playing after Stop | With eligible keep-awake enabled, Stop clears the tile but leaves silent playback running; disable the setting and confirm Spotify pauses, or stop directly in Spotify |
 | Import rejected | Preserve the original; schema or integrity may be unsupported |
 | File grayed out in the picker | Refresh to load the unfiltered chooser; if it remains unavailable, download a local copy through your file manager/provider. Do not rename or reset app data to bypass this. |

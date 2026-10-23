@@ -94,6 +94,7 @@ for (const [device, identity] of [
       return transportQueue;
     });
     await page.locator("#btn-settings").click();
+    await page.getByRole("tab", { name: "Audio", exact: true }).click();
     await expect(page.locator("#volume-support-hint")).toBeVisible();
     for (const id of ["in-volume", "in-fade-in", "in-fade-out"]) {
       await expect(page.locator(`#${id}`)).toBeDisabled();
@@ -158,6 +159,7 @@ test("the fullscreen button uses native fullscreen and tracks exits outside the 
 test("Home Screen help is reachable from Settings and its tabs remain readable", async ({ page }) => {
   await page.goto("/");
   await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "App", exact: true }).click();
   await page.locator("#btn-fullscreen-help").click();
   const dialog = page.locator("#fullscreen-help-modal");
   await expect(dialog).toBeVisible();

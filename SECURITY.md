@@ -48,13 +48,19 @@ configured Client IDs, authorization codes, PKCE values, tokens, cookies, HAR
 files or unreviewed logs. Screenshots must not expose account names, private
 playlists, device names, personal labels or local file paths.
 
-For playback and iPad keep-awake failures, **Settings -> Playback -> Download
-playback diagnostics** creates the only approved diagnostic-log attachment.
-That app-generated JSON contains a bounded recent history of allowlisted event,
-intent, timing, status and boolean state categories. It excludes credentials,
-Client IDs, account/device/track identifiers and names, database contents,
-browser-storage values and raw Spotify response bodies. Review the generated
-file before sharing it and do not substitute a HAR, console log, storage dump or
+For playback and iPad keep-awake failures, use **Settings -> Awake -> Share
+diagnostics** or **Download JSON**. Both create the same approved, app-generated
+diagnostic JSON with a bounded recent history of allowlisted event, intent,
+timing, reported volume/capability, status and boolean state categories. It
+excludes credentials, Client IDs, account/device/track identifiers and names,
+database contents, browser-storage values and raw Spotify response bodies.
+
+**Share diagnostics** is a user-initiated Web Share file action. It opens the
+system share sheet for the user to choose AirDrop, Files or another destination;
+nothing is transmitted automatically, and canceling the sheet sends nothing.
+When file sharing is unavailable, the action falls back to a local download.
+**Download JSON** always requests that local download. Review the generated file
+before sending it and do not substitute a HAR, console log, storage dump or
 other unreviewed diagnostic source.
 
 A public OAuth Client ID is not a secret, but an account-specific value still
@@ -65,11 +71,11 @@ attribution is deliberate; it is not permission to publish other personal data.
 
 | Location | Use |
 | --- | --- |
-| Memory | Access token, working SQLite database, pending edits and playback state |
+| Memory | Access token, working SQLite database, pending edits, playback state and a transient generated diagnostic file while sharing/downloading |
 | localStorage | Remembered sign-in, settings/device metadata, temporary pending-login registrations and a bounded sanitized playback-diagnostic history |
 | sessionStorage | Temporary tab-local PKCE verifier/state for sign-in |
 | IndexedDB | Database recovery, associated pending edits and pre-edit snapshot |
-| Downloads | User-requested SQLite exports/backups and generated sanitized playback diagnostics |
+| Downloads | User-requested SQLite exports/backups and generated sanitized playback diagnostics from Download JSON or the share fallback |
 
 The authentication release contract uses revocable, per-state shared
 registrations with a 10-minute expiry for unfinished attempts and client/redirect
@@ -120,8 +126,9 @@ SQLite exports, but imported data can itself contain private information.
 Logout offers export, cancellation or explicit discard before removing owned
 browser data. It must not delete originals, previous downloads or unrelated
 apps' storage. The in-browser playback-diagnostic history is app-owned and is
-erased with logout; any diagnostic file already downloaded remains a normal
-local file. Close older app tabs before upgrades/erase; older loaded code may
+erased with logout; any diagnostic copy already downloaded, saved or sent
+through the system share sheet remains under the user's control outside the app.
+Close older app tabs before upgrades/erase; older loaded code may
 not participate in current cleanup and open connections can block deletion.
 
 The required cross-tab design gives one explicit logout/reset coordinator

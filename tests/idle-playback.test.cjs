@@ -20,9 +20,14 @@ function controller(t, name = "Synthetic iPad") {
     requests: [],
     devices: null,
     duration: 600000,
-    silence: { id: SILENCE, uri: `spotify:track:${SILENCE}` },
+    silence: {
+      id: SILENCE,
+      uri: `spotify:track:${SILENCE}`,
+      album: { uri: "spotify:album:synthetic-silence" },
+    },
     beforeRequest: null,
     leavePauseStateStale: false,
+    pendingPauseState: false,
   };
   app.window.testApi = async (url, options = {}) => {
     const request = { path: url.split("?")[0], url, method: options.method || "GET", body: options.body ? JSON.parse(options.body) : null };
@@ -30,14 +35,20 @@ function controller(t, name = "Synthetic iPad") {
     if (backend.beforeRequest) await backend.beforeRequest(request);
     if (request.path === "/me/player/devices") return { devices: backend.devices || [backend.device] };
     if (request.path === "/me/player" && request.method === "GET") {
-      return structuredClone({ ...backend.state, device: backend.device });
+      const state = structuredClone({ ...backend.state, device: backend.device });
+      if (backend.pendingPauseState) {
+        backend.pendingPauseState = false;
+        backend.state.is_playing = false;
+      }
+      return state;
     }
     if (request.path === `/tracks/${SILENCE}`) {
       return { ...backend.silence, duration_ms: backend.duration, is_playable: true };
     }
     if (request.path === "/me/player/play") {
-      if (request.body?.uris) {
-        const id = request.body.uris[0].split(":").at(-1);
+      const uri = request.body?.uris?.[0] || request.body?.offset?.uri;
+      if (uri) {
+        const id = uri.split(":").at(-1);
         const silence = id === backend.silence.id || id === SILENCE;
         backend.state.item = {
           id,
@@ -50,7 +61,8 @@ function controller(t, name = "Synthetic iPad") {
       return null;
     }
     if (request.path === "/me/player/pause") {
-      if (!backend.leavePauseStateStale) backend.state.is_playing = false;
+      if (backend.leavePauseStateStale) backend.pendingPauseState = true;
+      else backend.state.is_playing = false;
       return null;
     }
     if (request.path === "/me/player/seek") return null;
@@ -154,11 +166,21 @@ for (const [getLatency, pausedTile] of [[0, false], [3000, false], [7000, false]
       }
       if (request.path === `/tracks/${SILENCE}`) {
         await clock.wait(getLatency);
-        return { id: SILENCE, duration_ms: app.backend.duration, is_playable: true };
+        return {
+          id: SILENCE,
+          uri: `spotify:track:${SILENCE}`,
+          album: { uri: "spotify:album:synthetic-silence" },
+          duration_ms: app.backend.duration,
+          is_playable: true,
+        };
       }
       assert.equal(request.path, "/me/player/play");
       assert.equal(request.method, "PUT");
-      assert.deepEqual(JSON.parse(options.body), { uris: [`spotify:track:${SILENCE}`], position_ms: 0 });
+      assert.deepEqual(JSON.parse(options.body), {
+        context_uri: "spotify:album:synthetic-silence",
+        offset: { uri: `spotify:track:${SILENCE}` },
+        position_ms: 0,
+      });
       await clock.wait(2000);
       if (startedAt !== null) durationsBeforeRestart.push(clock.now - startedAt);
       startedAt = clock.now;
@@ -189,7 +211,11 @@ test("default idle behavior starts only on a freshly available selected iPad dev
   const app = controller(t, "Synthetic IPAD");
   assert.equal(await app.run("checkIdlePlayback()"), true);
   assert.equal(app.plays().length, 1);
-  assert.deepEqual(app.plays()[0].body, { uris: [`spotify:track:${SILENCE}`], position_ms: 0 });
+  assert.deepEqual(app.plays()[0].body, {
+    context_uri: "spotify:album:synthetic-silence",
+    offset: { uri: `spotify:track:${SILENCE}` },
+    position_ms: 0,
+  });
   assert.match(app.plays()[0].url, /device_id=synthetic-device/);
   assert.equal(app.run("nowPlaying"), null);
   assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("spinning"), true);
@@ -198,12 +224,47 @@ test("default idle behavior starts only on a freshly available selected iPad dev
   assert.equal(app.backend.requests.some(request => /volume|repeat/.test(request.path)), false);
 });
 
+test("Pause waits for Spotify's prior pause command before starting silence", async t => {
+  const app = controller(t);
+  app.tile();
+  app.backend.state.is_playing = true;
+  app.backend.leavePauseStateStale = true;
+
+  assert.equal(await app.run("pausePlayback()"), true);
+  const requests = app.backend.requests;
+  const playIndex = requests.findIndex(request => request.path === "/me/player/play");
+  const stateIndexes = requests
+    .map((request, index) => request.path === "/me/player" && request.method === "GET" ? index : -1)
+    .filter(index => index >= 0);
+  assert.ok(stateIndexes.length >= 3);
+  assert.ok(playIndex > stateIndexes[1], "silence must wait for a fresh paused state");
+  assert.equal(app.run(`
+    playbackDiagnosticBuffer.some(entry =>
+      entry.event === "idle-state-read" && entry.stage === "pause-settle")
+  `), true);
+});
+
+test("zero reported iPad volume blocks futile silence requests with a physical-volume instruction", async t => {
+  const app = controller(t);
+  app.backend.device.volume_percent = 0;
+
+  assert.equal(await app.run("checkIdlePlayback()"), false);
+  assert.equal(app.plays().length, 0);
+  assert.match(app.run("idleFailure"), /volume at 0/i);
+  assert.match(app.run("idleFailure"), /one notch/i);
+  assert.equal(app.run(`
+    playbackDiagnosticBuffer.some(entry =>
+      entry.event === "idle-state-read" && entry.volumePercent === 0)
+  `), true);
+});
+
 test("idle silence plays Spotify's market-relinked URI instead of the unavailable original", async t => {
   const app = controller(t);
   const resolved = "synthetic-market-silence";
   app.backend.silence = {
     id: resolved,
     uri: `spotify:track:${resolved}`,
+    album: { uri: "spotify:album:synthetic-silence" },
     linked_from: { id: SILENCE },
   };
 
@@ -211,7 +272,8 @@ test("idle silence plays Spotify's market-relinked URI instead of the unavailabl
   const metadata = app.backend.requests.find(request => request.path === `/tracks/${SILENCE}`);
   assert.match(metadata.url, /market=from_token/);
   assert.deepEqual(app.plays()[0].body, {
-    uris: [`spotify:track:${resolved}`],
+    context_uri: "spotify:album:synthetic-silence",
+    offset: { uri: `spotify:track:${resolved}` },
     position_ms: 0,
   });
   assert.equal(app.run("idleTrack.id"), resolved);
@@ -396,6 +458,7 @@ test("Pause preserves the tile position while silence plays and Resume restores 
     "GET /me/player/devices",
     `GET /tracks/${SILENCE}`,
     "GET /me/player",
+    "GET /me/player",
     "PUT /me/player/play",
     "GET /me/player",
   ]);
@@ -433,8 +496,8 @@ test("an acknowledged silence command cannot spin the ball until Spotify confirm
   await app.run("playbackDiagnosticPersistQueue");
   assert.equal(app.plays().length, 2, "A success-shaped no-op gets only one bounded transfer and retry");
   assert.equal(app.backend.requests.filter(request =>
-    request.path === "/me/player" && request.method === "GET").length, 3);
-  assert.equal(app.backend.requests.length, 10);
+    request.path === "/me/player" && request.method === "GET").length, 4);
+  assert.equal(app.backend.requests.length, 11);
   assert.equal(app.run("idlePlayback"), null);
   assert.match(app.run("idleFailure"), /acknowledged two silence requests/);
   assert.equal(app.window.document.getElementById("keepalive-ball").classList.contains("spinning"), false);
@@ -480,10 +543,11 @@ test("Stop clears the tile but starts silence; disabling then stops only that si
   assert.equal(await app.run("stopPlayback()"), true);
   assert.equal(app.run("nowPlaying"), null);
   assert.equal(app.backend.state.item.id, SILENCE);
-  assert.deepEqual(app.backend.requests.slice(0, 5).map(request => `${request.method} ${request.path}`), [
+  assert.deepEqual(app.backend.requests.slice(0, 6).map(request => `${request.method} ${request.path}`), [
     "PUT /me/player/pause",
     "GET /me/player/devices",
     `GET /tracks/${SILENCE}`,
+    "GET /me/player",
     "GET /me/player",
     "PUT /me/player/play",
   ]);

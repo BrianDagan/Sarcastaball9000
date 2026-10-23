@@ -100,6 +100,7 @@ test("force refresh reopens current assets while preserving sign-in, library and
   });
 
   await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "App", exact: true }).click();
   const navigated = page.waitForEvent("framenavigated");
   await page.locator("#btn-force-refresh-app").click();
   await navigated;

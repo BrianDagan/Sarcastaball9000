@@ -200,7 +200,7 @@ test("Settings alone widens to 680px and enabled logout text has sufficient cont
 });
 
 for (const [width, height] of [[320, 568], [390, 844], [844, 390], [1280, 800]]) {
-  test(`Settings stays usable at ${width}x${height} with enlarged text`, async ({ page }) => {
+  test(`tabbed Settings keeps its frame fixed at ${width}x${height} with enlarged text`, async ({ page }) => {
     await page.setViewportSize({ width, height });
     await page.locator("#btn-settings").click();
     await page.evaluate(() => {
@@ -215,7 +215,22 @@ for (const [width, height] of [[320, 568], [390, 844], [844, 390], [1280, 800]])
     expect(box.y + box.height).toBeLessThanOrEqual(height);
     const overflow = await card.evaluate(element => element.scrollWidth - element.clientWidth);
     expect(overflow).toBeLessThanOrEqual(1);
-    for (const id of ["btn-logout-spotify", "in-db-file", "btn-close-modal"]) {
+    const frame = await card.evaluate(element => ({
+      overflowY: getComputedStyle(element).overflowY,
+      excess: element.scrollHeight - element.clientHeight,
+    }));
+    expect(frame.overflowY).toBe("hidden");
+    expect(frame.excess).toBeLessThanOrEqual(1);
+    await expect(page.locator("#settings-tabs")).toBeInViewport();
+    await expect(page.locator("#btn-close-modal")).toBeInViewport();
+    for (const [tab, id] of [
+      ["Spotify", "in-client-id"],
+      ["Library", "in-db-file"],
+      ["Awake", "btn-share-playback-diagnostics"],
+      ["App", "btn-force-refresh-app"],
+      ["About", "btn-fake-beer"],
+    ]) {
+      await page.getByRole("tab", { name: tab, exact: true }).click();
       const control = page.locator(`#${id}`);
       await control.scrollIntoViewIfNeeded();
       const rect = await control.boundingBox();

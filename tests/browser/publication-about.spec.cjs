@@ -14,6 +14,7 @@ test.beforeEach(async ({ page, context, baseURL }) => {
   await expect(page.locator("#empty-state")).toBeVisible();
   await page.locator("#btn-settings").click();
   await expect(page.locator("#modal")).toBeVisible();
+  await page.getByRole("tab", { name: "About", exact: true }).click();
 });
 
 test.afterEach(async ({ page }) => {
@@ -21,9 +22,9 @@ test.afterEach(async ({ page }) => {
 });
 
 test("About credits the creator and exposes safe source and served license links", async ({ page }) => {
-  const about = page.getByRole("region", { name: "About", exact: true });
+  const about = page.getByRole("tabpanel", { name: "About", exact: true });
   await expect(about).toContainText("Created by Brian Dagan");
-  await expect(about).toContainText("Source is publicly available on GitHub.");
+  await expect(about).toContainText("Source is public.");
   await expect(page.locator("#modal")).toContainText("Sports Audio DJ");
   await expect(page.locator("#modal")).toContainText("Only explicitly confirmed logout may clear all app data.");
   const links = [
@@ -95,40 +96,44 @@ async function linkPresentation(link) {
   });
 }
 
-test("Setup links have readable text, underlines and keyboard focus in every enabled state", async ({ page }) => {
-  for (const link of await page.locator("#modal .hint a[href]").all()) {
-    await link.evaluate(element => {
-      element.addEventListener("click", event => event.preventDefault());
-    });
-    for (const state of ["normal", "hover", "focus", "pressed"]) {
-      if (state === "normal") {
-        await page.mouse.move(0, 0);
-        await link.evaluate(element => element.blur());
-        await link.scrollIntoViewIfNeeded();
-      }
-      if (state === "hover") await link.hover();
-      if (state === "focus") {
-        await page.mouse.move(0, 0);
-        await link.focus();
-        await page.keyboard.press("Shift+Tab");
-        await page.keyboard.press("Tab");
-        await expect(link).toBeFocused();
-      }
-      if (state === "pressed") {
-        await link.hover();
-        await page.mouse.down();
-      }
-      try {
-        const presentation = await linkPresentation(link);
-        expect(presentation.ratio).toBeGreaterThanOrEqual(4.5);
-        expect(presentation.decoration).toContain("underline");
-        if (state === "focus") {
-          expect(presentation.focusVisible).toBe(true);
-          expect(presentation.outline).not.toBe("none");
-          expect(presentation.outlineWidth).toBeGreaterThanOrEqual(2);
+test("Settings links have readable text, underlines and keyboard focus in every enabled state", async ({ page }) => {
+  for (const tabName of ["Spotify", "About"]) {
+    await page.getByRole("tab", { name: tabName, exact: true }).click();
+    const panel = page.locator("#modal .settings-panel:not([hidden])");
+    for (const link of await panel.locator(".hint a[href]").all()) {
+      await link.evaluate(element => {
+        element.addEventListener("click", event => event.preventDefault());
+      });
+      for (const state of ["normal", "hover", "focus", "pressed"]) {
+        if (state === "normal") {
+          await page.mouse.move(0, 0);
+          await link.evaluate(element => element.blur());
+          await link.scrollIntoViewIfNeeded();
         }
-      } finally {
-        if (state === "pressed") await page.mouse.up();
+        if (state === "hover") await link.hover();
+        if (state === "focus") {
+          await page.mouse.move(0, 0);
+          await link.focus();
+          await page.keyboard.press("Shift+Tab");
+          await page.keyboard.press("Tab");
+          await expect(link).toBeFocused();
+        }
+        if (state === "pressed") {
+          await link.hover();
+          await page.mouse.down();
+        }
+        try {
+          const presentation = await linkPresentation(link);
+          expect(presentation.ratio).toBeGreaterThanOrEqual(4.5);
+          expect(presentation.decoration).toContain("underline");
+          if (state === "focus") {
+            expect(presentation.focusVisible).toBe(true);
+            expect(presentation.outline).not.toBe("none");
+            expect(presentation.outlineWidth).toBeGreaterThanOrEqual(2);
+          }
+        } finally {
+          if (state === "pressed") await page.mouse.up();
+        }
       }
     }
   }

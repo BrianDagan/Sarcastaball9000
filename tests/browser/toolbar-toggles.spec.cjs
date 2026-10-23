@@ -89,6 +89,7 @@ test("toolbar and Settings keep-awake switches stay synchronized without stealin
   await expect(page.locator("#keepalive-enabled")).toBeFocused();
   expect(await page.evaluate(() => localStorage.getItem(LS_IPAD_KEEPALIVE))).toBe("0");
   await page.locator("#btn-settings").click();
+  await page.getByRole("tab", { name: "Awake", exact: true }).click();
   await expect(page.locator("#in-ipad-keepalive")).not.toBeChecked();
   await page.locator("#in-ipad-keepalive").check();
   await expect(page.locator("#keepalive-enabled")).toBeChecked();
