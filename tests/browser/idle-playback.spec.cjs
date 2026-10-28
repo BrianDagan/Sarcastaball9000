@@ -55,6 +55,9 @@ async function prepare(page, options = {}) {
     failNextTrackStatus: options.failNextTrackStatus || null,
     acknowledgeSilenceWithoutPlayback: false,
     acknowledgeNextTrackWithoutPlayback: false,
+    nextTrackStateLagReads: 0,
+    staleTrackStateReads: 0,
+    staleTrackState: null,
     leavePauseStateStale: false,
     pendingPauseState: false,
     calls: [],
@@ -110,7 +113,9 @@ async function prepare(page, options = {}) {
       }
       if (method === "GET" && url.pathname === "/v1/me/player") {
         // Capture before the gate so releasing it delivers genuinely stale state.
-        const state = structuredClone(backend.state);
+        const state = structuredClone(backend.staleTrackStateReads > 0
+          ? backend.staleTrackState : backend.state);
+        if (backend.staleTrackStateReads > 0) backend.staleTrackStateReads--;
         if (backend.pendingPauseState) {
           backend.pendingPauseState = false;
           backend.state.is_playing = false;
@@ -164,6 +169,11 @@ async function prepare(page, options = {}) {
         if (id !== backend.silenceId && backend.acknowledgeNextTrackWithoutPlayback) {
           backend.acknowledgeNextTrackWithoutPlayback = false;
           return route.fulfill({ status: 204 });
+        }
+        if (id !== backend.silenceId && backend.nextTrackStateLagReads > 0) {
+          backend.staleTrackState = structuredClone(backend.state);
+          backend.staleTrackStateReads = backend.nextTrackStateLagReads;
+          backend.nextTrackStateLagReads = 0;
         }
         backend.state.item = {
           ...track(id, id === backend.silenceId ? backend.durationMs : 123456),
@@ -528,6 +538,27 @@ test("idle silence follows Spotify's market-relinked track URI", async ({ page }
   await expectIdleStatus(page);
 });
 
+test("a stale iPad playback read catches up without transferring or restarting the song", async ({ page }) => {
+  const backend = await prepare(page, { keepAlive: false, trackPlayed: false });
+  await loadLibrary(page);
+  backend.nextTrackStateLagReads = 1;
+  const before = backend.calls.length;
+
+  await startSong(page);
+
+  const calls = backend.calls.slice(before);
+  expect(plays(backend, SONG_URI)).toHaveLength(1);
+  expect(commands(backend, "/v1/me/player")).toHaveLength(0);
+  expect(calls.filter(call => call.method === "GET" && call.path === "/v1/me/player")).toHaveLength(2);
+  expect(calls.filter(call => call.path === "/v1/me/player/devices")).toHaveLength(0);
+  expect(await page.evaluate(() => playbackDiagnosticBuffer
+    .filter(event => event.event === "track-confirmation")
+    .map(event => ({ stage: event.stage, outcome: event.outcome })))).toEqual([
+    { stage: "confirmation", outcome: "unconfirmed" },
+    { stage: "confirmation-recheck", outcome: "confirmed" },
+  ]);
+});
+
 test("an acknowledged iPad Start no-op gets one bounded confirmation retry", async ({ page }) => {
   const backend = await prepare(page, { keepAlive: false, trackPlayed: false });
   await loadLibrary(page);
@@ -537,7 +568,7 @@ test("an acknowledged iPad Start no-op gets one bounded confirmation retry", asy
 
   expect(plays(backend, SONG_URI)).toHaveLength(2);
   expect(backend.calls.filter(call =>
-    call.method === "GET" && call.path === "/v1/me/player").length).toBe(2);
+    call.method === "GET" && call.path === "/v1/me/player").length).toBe(3);
   expect(backend.calls.filter(call =>
     call.method === "GET" && call.path === "/v1/me/player/devices").length).toBeGreaterThanOrEqual(2);
   expect(await page.evaluate(() => ({
@@ -551,7 +582,7 @@ test("an acknowledged iPad Start no-op gets one bounded confirmation retry", asy
     uuid: ids.firstPlayback,
     paused: false,
     detached: false,
-    confirmations: ["unconfirmed", "confirmed"],
+    confirmations: ["unconfirmed", "unconfirmed", "confirmed"],
   });
 });
 

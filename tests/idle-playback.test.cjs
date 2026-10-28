@@ -530,6 +530,32 @@ test("Pause preserves the tile position while silence plays and Resume restores 
   assert.equal(app.run("idlePlayback"), null);
 });
 
+test("already-running silence after waking Spotify preserves the paused tile through reconciliation and Resume", async t => {
+  const app = controller(t);
+  app.tile();
+  app.run("setPlaybackPaused(true); idleReady = true");
+  app.backend.state.item = { id: SILENCE, duration_ms: app.backend.duration };
+  app.backend.state.is_playing = true;
+  app.backend.state.progress_ms = 3000;
+  const position = app.run("Math.round(currentPositionMs())");
+
+  assert.equal(await app.run("checkIdlePlayback()"), true);
+  assert.equal(app.plays().length, 0, "Existing silence must not restart");
+  assert.equal(app.run("idleResume.uuid"), "synthetic-playback");
+  assert.equal(app.run("idleResume.deviceId"), app.backend.device.id);
+  assert.equal(await app.run("reconcilePlayback()"), true);
+  assert.equal(app.run("nowPlaying.paused"), true);
+  assert.equal(app.run("nowPlaying.detached"), undefined);
+  assert.equal(app.run("Math.round(currentPositionMs())"), position);
+  assert.equal(app.run("playbackDiagnosticBuffer.some(event => event.event === 'track-control-lost')"), false);
+  assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
+
+  assert.equal(await app.run("resumePlayback()"), true);
+  assert.equal(app.plays().length, 1);
+  assert.deepEqual(app.plays()[0].body, { uris: ["spotify:track:synthetic-song"], position_ms: position });
+  assert.equal(app.run("nowPlaying.paused"), false);
+});
+
 test("an acknowledged silence command cannot spin the ball until Spotify confirms playback", async t => {
   const app = controller(t);
   app.tile();

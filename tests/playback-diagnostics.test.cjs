@@ -82,6 +82,24 @@ test("playback diagnostics persist across reloads without exporting unrecognized
   assert.equal("deviceName" in events[0], false);
 });
 
+test("confirmation rechecks export rounded positions but no track or response identifiers", async t => {
+  const app = createApp();
+  t.after(() => app.close());
+  app.run(`recordPlaybackDiagnostic("track-confirmation", {
+    source: "start", stage: "confirmation-recheck", attempt: 1, outcome: "confirmed",
+    progressSec: 2, requestedPositionSec: 0,
+    trackId: "private-track-value", rawResponse: "private-response-value"
+  })`);
+  await app.run("playbackDiagnosticPersistQueue");
+  const exported = app.run("createPlaybackDiagnosticExport()");
+  const event = exported.report.events[0];
+  assert.equal(event.stage, "confirmation-recheck");
+  assert.equal(event.progressSec, 2);
+  assert.equal(event.requestedPositionSec, 0);
+  assert.equal(exported.text.includes("private-track-value"), false);
+  assert.equal(exported.text.includes("private-response-value"), false);
+});
+
 test("Spotify wake diagnostics retain only allowlisted lifecycle categories", async t => {
   const app = createApp();
   t.after(() => app.close());

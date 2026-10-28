@@ -2271,6 +2271,7 @@ const PLAYBACK_MISMATCH_MIN_INTERVAL_MS = 1000;
 const PLAYBACK_RECONCILE_MS = 5000;
 const PAUSED_PLAYBACK_RECONCILE_MS = 60000;
 const TRACK_CONFIRM_SETTLE_MS = 750;
+const TRACK_CONFIRM_RECHECK_MS = 1000;
 const DEVICE_ACTIVATION_SETTLE_MS = 500;
 const IDLE_CONFIRM_SETTLE_MS = 750;
 const TRANSIENT_PLAY_FAILURE_STATUSES = new Set([500, 502, 503, 504]);
@@ -2298,7 +2299,7 @@ let spotifyWakePending = null;
 
 const PLAYBACK_DIAGNOSTIC_FIELDS = new Set([
   "source", "purpose", "stage", "outcome", "reason", "errorKind", "trackKind", "repeatState", "requestMode",
-  "controller", "visibility", "attempt", "status", "elapsedMs", "progressSec", "durationSec",
+  "controller", "visibility", "attempt", "status", "elapsedMs", "progressSec", "durationSec", "requestedPositionSec",
   "keepAlive", "online", "standalone", "hasAuth", "selectedDeviceStored", "devicePresent",
   "deviceEligible", "deviceActive", "deviceRestricted", "stateAvailable", "stateDeviceMatches",
   "isPlaying", "isSilence", "recovered", "relinked", "supportsVolume", "volumePercent",
@@ -2309,7 +2310,7 @@ const PLAYBACK_DIAGNOSTIC_BOOLEAN_FIELDS = new Set([
   "isPlaying", "isSilence", "recovered", "relinked", "supportsVolume",
 ]);
 const PLAYBACK_DIAGNOSTIC_NUMBER_FIELDS = new Set([
-  "attempt", "status", "elapsedMs", "progressSec", "durationSec", "volumePercent",
+  "attempt", "status", "elapsedMs", "progressSec", "durationSec", "volumePercent", "requestedPositionSec",
 ]);
 const PLAYBACK_DIAGNOSTIC_EVENTS = new Set([
   "app-start", "device-refresh", "device-transfer", "idle-already-running", "idle-blocked",
@@ -2323,7 +2324,7 @@ const PLAYBACK_DIAGNOSTIC_VALUES = {
   purpose: new Set(["playback", "track", "start", "resume", "silence", "silence-confirmation"]),
   stage: new Set([
     "request", "acknowledged", "safety", "metadata-recheck", "recovery-safety",
-    "confirmation", "reconciliation", "pause-settle", "pagehide", "pageshow", "pageshow-restored",
+    "confirmation", "confirmation-recheck", "reconciliation", "pause-settle", "pagehide", "pageshow", "pageshow-restored",
     "hidden", "return",
   ]),
   outcome: new Set([
@@ -2999,6 +3000,9 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
     }
     const duration = isSilenceState(state) && Number.isFinite(state.item?.duration_ms) && state.item.duration_ms > IDLE_MIN_DURATION_MS
       ? state.item.duration_ms : track.durationMs;
+    if (nowPlaying?.paused && playingSnapshot && !idleResume) {
+      idleResume = { uuid: nowPlaying.uuid, trackId: playingSnapshot.trackid, deviceId: device.id };
+    }
     if (isSilenceState(state) && state.is_playing) {
       const observed = recordIdlePlayback(device.id, duration, state.progress_ms, observedAt);
       idleFailure = null;
@@ -3012,9 +3016,6 @@ async function maintainIdlePlayback(current, expectedPausedTrackIds = [], source
       if (performance.now() < observed.renewAt) return true;
     }
     requireIdlePlaybackVolume(state);
-    if (nowPlaying?.paused && playingSnapshot && !idleResume) {
-      idleResume = { uuid: nowPlaying.uuid, trackId: playingSnapshot.trackid, deviceId: device.id };
-    }
     if (!live()) return false;
     const pendingDevice = { deviceId: device.id };
     idlePendingDevice = pendingDevice;
@@ -3328,19 +3329,23 @@ function shouldConfirmTrackPlayback(deviceId) {
 }
 
 async function readTrackConfirmation(deviceId, request, current, source, attempt, requestedAt) {
-  if (!await waitForDeviceActivation(current, TRACK_CONFIRM_SETTLE_MS)) return null;
-  const state = await api("/me/player", {}, current);
-  if (!current()) return null;
-  const confirmed = playbackStateMatchesRequest(state, deviceId, request);
-  recordPlaybackDiagnostic("track-confirmation", {
-    source,
-    stage: "confirmation",
-    attempt,
-    outcome: confirmed ? "confirmed" : "unconfirmed",
-    elapsedMs: Math.round(performance.now() - requestedAt),
-    ...diagnosticStateDetails(state, activeDeviceCapabilities, playbackRequestTrackIds(request)),
-  });
-  return { confirmed, state };
+  for (const [observation, delay] of [TRACK_CONFIRM_SETTLE_MS, TRACK_CONFIRM_RECHECK_MS].entries()) {
+    if (!await waitForDeviceActivation(current, delay)) return null;
+    const state = await api("/me/player", {}, current);
+    if (!current()) return null;
+    const confirmed = playbackStateMatchesRequest(state, deviceId, request);
+    recordPlaybackDiagnostic("track-confirmation", {
+      source,
+      stage: observation === 0 ? "confirmation" : "confirmation-recheck",
+      attempt,
+      outcome: confirmed ? "confirmed" : "unconfirmed",
+      elapsedMs: Math.round(performance.now() - requestedAt),
+      progressSec: Number.isFinite(state?.progress_ms) ? Math.round(state.progress_ms / 1000) : undefined,
+      requestedPositionSec: Number.isFinite(request.body?.position_ms) ? Math.round(request.body.position_ms / 1000) : undefined,
+      ...diagnosticStateDetails(state, activeDeviceCapabilities, playbackRequestTrackIds(request)),
+    });
+    if (confirmed || observation === 1) return { confirmed, state };
+  }
 }
 
 async function confirmTrackPlayback(deviceId, request, current, source, started, requestedAt) {

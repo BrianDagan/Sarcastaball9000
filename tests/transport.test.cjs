@@ -472,6 +472,93 @@ test("a transient post-Start null state does not surrender cue control", async t
   assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
 });
 
+for (const operation of ["start", "resume"]) {
+  for (const laggingReads of [0, 1, 3]) {
+    test(`iPad ${operation} tolerates ${laggingReads} stale confirmation reads without extra playback`, async t => {
+      const app = player(t);
+      const requests = [];
+      const delays = [];
+      let reads = 0;
+      app.run(`
+        localStorage.setItem(LS_IPAD_KEEPALIVE, "0");
+        activeDeviceCapabilities = {
+          id: "synthetic-device", name: "Synthetic iPad", supports_volume: false
+        };
+      `);
+      if (operation === "resume") app.run("setNowPlaying(window.testCell); setPlaybackPaused(true)");
+      app.window.confirmationWait = async (current, delay) => { delays.push(delay); return current(); };
+      app.run("waitForDeviceActivation = (current, delay = DEVICE_ACTIVATION_SETTLE_MS) => window.confirmationWait(current, delay)");
+      app.window.testApi = async (path, options = {}) => {
+        requests.push({ path, method: options.method || "GET" });
+        if (path.startsWith("/me/player/play")) return null;
+        if (path === "/me/player" && !options.method) {
+          reads++;
+          return {
+            ...playbackState(true),
+            item: { id: reads <= laggingReads ? "previous-track" : "synthetic-track" },
+          };
+        }
+        if (path === "/me/player/devices") {
+          return { devices: [{
+            id: "synthetic-device", name: "Synthetic iPad", is_active: true, supports_volume: false,
+          }] };
+        }
+        if (path === "/me/player" && options.method === "PUT") return null;
+        throw new Error(`Unexpected synthetic request: ${path}`);
+      };
+
+      assert.equal(await app.run(operation === "start" ? "startPlayback(window.testCell)" : "resumePlayback()"), true);
+      const retryNeeded = laggingReads > 1;
+      assert.equal(requests.filter(request => request.path.startsWith("/me/player/play")).length, retryNeeded ? 2 : 1);
+      assert.equal(requests.filter(request => request.path === "/me/player/devices").length, retryNeeded ? 1 : 0);
+      assert.equal(requests.filter(request => request.path === "/me/player" && request.method === "PUT").length, retryNeeded ? 1 : 0);
+      assert.equal(reads, laggingReads + 1);
+      assert.deepEqual(delays, laggingReads === 0 ? [750] : laggingReads === 1 ? [750, 1000] : [750, 1000, 500, 750, 1000]);
+      assert.equal(app.run("nowPlaying.paused"), false);
+      const events = Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation')"));
+      assert.equal(events.at(-1).outcome, "confirmed");
+      assert.equal(events.at(-1).stage, laggingReads === 0 ? "confirmation" : "confirmation-recheck");
+      assert.equal(events.at(-1).progressSec, 1);
+      assert.equal(Number.isFinite(events.at(-1).requestedPositionSec), true);
+    });
+  }
+}
+
+test("Stop cancels a stale iPad confirmation recheck before any replay", async t => {
+  const app = player(t);
+  const entered = deferred(), release = deferred();
+  const requests = [];
+  app.run(`
+    localStorage.setItem(LS_IPAD_KEEPALIVE, "0");
+    activeDeviceCapabilities = {
+      id: "synthetic-device", name: "Synthetic iPad", supports_volume: false
+    };
+  `);
+  app.window.confirmationWait = async (current, delay) => {
+    if (delay === 1000) { entered.resolve(); await release.promise; }
+    return current();
+  };
+  app.run("waitForDeviceActivation = (current, delay) => window.confirmationWait(current, delay)");
+  app.window.testApi = async (path, options = {}) => {
+    requests.push(path);
+    if (path.startsWith("/me/player/play") || path === "/me/player/pause") return null;
+    if (path === "/me/player" && !options.method) {
+      return { ...playbackState(true), item: { id: "previous-track" } };
+    }
+    throw new Error(`Unexpected synthetic request: ${path}`);
+  };
+  const start = app.run("startPlayback(window.testCell)");
+  await entered.promise;
+  const stop = app.run("stopPlayback()");
+  release.resolve();
+  assert.equal(await start, false);
+  assert.equal(await stop, true);
+  assert.deepEqual(requests, [
+    "/me/player/play?device_id=synthetic-device", "/me/player", "/me/player/pause",
+  ]);
+  assert.equal(app.run("nowPlaying"), null);
+});
+
 test("iPad Start confirms acknowledged playback and repairs one success-shaped no-op", async t => {
   const app = player(t);
   const requests = [];
@@ -513,6 +600,7 @@ test("iPad Start confirms acknowledged playback and repairs one success-shaped n
   assert.deepEqual(requests.map(request => request.path), [
     "/me/player/play?device_id=synthetic-device",
     "/me/player",
+    "/me/player",
     "/me/player/devices",
     "/me/player",
     "/me/player/play?device_id=synthetic-device",
@@ -523,7 +611,7 @@ test("iPad Start confirms acknowledged playback and repairs one success-shaped n
   assert.equal(app.run("nowPlaying.detached"), false);
   assert.deepEqual(
     Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation').map(entry => entry.outcome)")),
-    ["unconfirmed", "confirmed"],
+    ["unconfirmed", "unconfirmed", "confirmed"],
   );
 });
 
@@ -590,6 +678,7 @@ test("a quick Pause waits for iPad Start confirmation and its bounded retry", as
   assert.deepEqual(requests.map(request => request.path), [
     "/me/player/play?device_id=synthetic-device",
     "/me/player",
+    "/me/player",
     "/me/player/devices",
     "/me/player",
     "/me/player/play?device_id=synthetic-device",
@@ -598,7 +687,7 @@ test("a quick Pause waits for iPad Start confirmation and its bounded retry", as
   ]);
   assert.deepEqual(
     Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation').map(entry => entry.outcome)")),
-    ["unconfirmed", "confirmed"],
+    ["unconfirmed", "unconfirmed", "confirmed"],
   );
   assert.equal(app.run("nowPlaying.paused"), true);
 });
@@ -654,7 +743,7 @@ test("failed iPad Start preserves progress and Retry explicitly restores that cu
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
   assert.equal(app.run("nowPlaying.paused"), true);
   assert.equal(app.run("nowPlaying.detached"), true);
-  assert.equal(Math.round(app.run("currentPositionMs()")), 2000);
+  assert.equal(Math.round(app.run("currentPositionMs()")), 4000);
   const status = app.window.document.getElementById("transport-status");
   assert.match(status.textContent, /two start requests.*position was preserved/i);
   assert.equal(status.querySelector("button")?.textContent, "Retry");
@@ -664,7 +753,7 @@ test("failed iPad Start preserves progress and Retry explicitly restores that cu
   assert.equal(plays.length, 3);
   assert.deepEqual(plays[2], {
     uris: ["spotify:track:synthetic-track"],
-    position_ms: 2000,
+    position_ms: 4000,
   });
   assert.equal(app.run("nowPlaying.paused"), false);
   assert.equal(app.run("nowPlaying.detached"), false);

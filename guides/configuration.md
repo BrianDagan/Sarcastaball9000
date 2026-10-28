@@ -377,6 +377,10 @@ replace the Spotify playback context of a song paused outside DJDad. DJDad
 cannot export or restore Spotify's remote queue; the saved local tile/position
 is not a queue backup. The paused playback snapshot is in memory, not stored in
 the library: reloading the page does not retain that temporary resume position.
+If silence is already running when Spotify becomes reachable again, the fresh
+idle check associates it with the locally paused tile before returning. Resume
+still restores that song and cue; reconciliation must not mistake the confirmed
+silence for a different song taking control.
 
 Uncheck **Use automatic iPad idle silence** to stop renewal and restore normal Pause/Stop
 behavior. Normal behavior also applies when the selected output is ineligible.
@@ -581,7 +585,7 @@ Spotify mixing/overlap or public/business-playback software.
 | Web Locks unavailable | Use a supporting browser in a secure context; do not clear storage to solve missing coordination |
 | Spotify 401 | Reconnect through Settings if authorization is invalid; retain the library, edits, settings and Client ID |
 | Refresh/token/network failure | Preserve data, check connectivity and retry or reconnect as needed; logout is not a prerequisite |
-| Start is acknowledged but no track appears, or returns a transient 5xx | On the selected iPad, Sarcastaball waits 750 milliseconds for one confirmation after an acknowledgement. An unconfirmed acknowledgement or a 500/502/503/504 play failure permits only one device refresh/transfer and one exact retry; acknowledged retries receive one final confirmation. If bounded recovery still fails, the cue is preserved when available and the error remains visible. Open Spotify on the selected device if it has disappeared. |
+| Start is acknowledged but no track appears, or returns a transient 5xx | On the selected iPad, Sarcastaball waits 750 milliseconds for confirmation after an acknowledgement. Only a mismatch adds one recheck after another 1 second, allowing lagging Spotify state to catch up without restarting a song already playing. Two unconfirmed reads or a 500/502/503/504 play failure permit only one device refresh/transfer and one exact retry; acknowledged retries use the same bounded confirmation/recheck. Success on the first read adds no extra requests. Sustained failure preserves the cue when available and leaves the error visible. Diagnostics include categorical confirmation/recheck stages and rounded observed/requested positions, never track IDs. Open Spotify on the selected device if it has disappeared. |
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
 | No active device / Spotify 404 | Sarcastaball makes one device-list check, one transfer with a short settling delay, and one playback retry when Spotify still lists the selected device, including when Spotify omits the inactive-device reason or reports a stale active flag. It does not rapidly poll activation status. If a saved iPad is missing, use **Open Spotify to wake iPad**, tap Play there if needed, then manually return for one fresh foreground check; otherwise open Spotify there once, return, refresh/reselect if needed, and Retry. Sarcastaball cannot launch Spotify automatically or switch back. Unavailable track/context content still fails after the bounded retry. |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |
