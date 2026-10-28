@@ -102,10 +102,10 @@ status-polling loop. Automatic idle recovery makes at most one additional fresh
 playback-state safety check before transferring the device.
 
 On a selected device whose name contains `iPad`, a successful `204` Start or
-Resume response is also confirmed once after a fixed 750-millisecond settling
-delay. If Spotify still reports another track or no current item, Sarcastaball
-performs one device refresh, one non-playing transfer, one retry of the exact
-request and one final confirmation. These reads happen only after that explicit
+Resume response is checked after a fixed 750-millisecond settling
+delay, with one additional read after 1 second only when the first is unconfirmed.
+An acknowledged command is never automatically replayed or followed by a device
+transfer merely because track identity could not be verified. These reads happen only after that explicit
 Start/Resume command; they are not a recurring status loop. The queued transport
 sequence also prevents a quick Pause from racing ahead of this confirmation.
 
@@ -116,12 +116,19 @@ the iPad had been reported active seconds earlier, followed shortly by the
 device disappearing. This recovery is limited to that explicit command and one
 retry; automatic idle-silence requests do not retry 5xx failures.
 
-If both acknowledged attempts remain unconfirmed, or later spaced reconciliation
-reads consistently report another track, Sarcastaball freezes the local cue at
-its last position instead of discarding it. **Retry** or Resume explicitly starts
-that tile again at the preserved position on the selected device. The persistent
-error remains visible because the displayed tile is then a paused local cue, not
-a claim about what Spotify is currently playing.
+If the selected iPad reports playing a non-silence track but its identity remains
+unverified, Sarcastaball shows an explicit warning and retains the local running
+clock rather than pretending the song is paused. The next tile tap sends Pause,
+not Resume. Recurring reconciliation is suspended for this uncertain cue: the
+unverified response must not overwrite progress or turn a later Pause into Play.
+No mismatched track ID is adopted as a verified alias, and no played mark is
+created from that response. **Retry** explicitly sends Play again at the local
+position; a successful confirmation restores normal reconciliation.
+
+If unconfirmed playback is absent, paused, on another device or still silence,
+the local cue is frozen instead. Later spaced reconciliation of an initially
+verified song can also freeze the cue if another track consistently appears.
+**Retry** or Resume explicitly starts the tile at its preserved position.
 
 This recovery can reactivate a selected device that Spotify still advertises; it
 cannot wake an iPad that has disappeared from Spotify's device list. In that
@@ -589,7 +596,7 @@ Spotify mixing/overlap or public/business-playback software.
 | Web Locks unavailable | Use a supporting browser in a secure context; do not clear storage to solve missing coordination |
 | Spotify 401 | Reconnect through Settings if authorization is invalid; retain the library, edits, settings and Client ID |
 | Refresh/token/network failure | Preserve data, check connectivity and retry or reconnect as needed; logout is not a prerequisite |
-| Start is acknowledged but no track appears, or returns a transient 5xx | On the selected iPad, Sarcastaball waits 750 milliseconds for confirmation after an acknowledgement. Only a mismatch adds one recheck after another 1 second, allowing lagging Spotify state to catch up without restarting a song already playing. Two unconfirmed reads or a 500/502/503/504 play failure permit only one device refresh/transfer and one exact retry; acknowledged retries use the same bounded confirmation/recheck. Success on the first read adds no extra requests. Sustained failure preserves the cue when available and leaves the error visible. Diagnostics include categorical confirmation/recheck stages and rounded observed/requested positions, never track IDs. Open Spotify on the selected device if it has disappeared. |
+| Start is acknowledged but track identity cannot be verified | The selected iPad gets one confirmation read after 750 milliseconds and one mismatch-only recheck after another second, never an automatic replay or transfer. An explicit warning distinguishes uncertainty from confirmed success. If a non-silence track is playing on that iPad, the local clock remains running and Pause stays Pause; uncertain remote state does not overwrite the cue. Retry is an explicit new Play request. Missing/paused playback preserves a frozen cue instead. Actual 500/502/503/504 command failures retain one bounded device recovery retry. Diagnostics include rounded positions and categorical stages, never track IDs. |
 | Spotify 403 | Premium, allowlist, scopes, playlist access and device restrictions |
 | No active device / Spotify 404 | Sarcastaball makes one device-list check, one transfer with a short settling delay, and one playback retry when Spotify still lists the selected device, including when Spotify omits the inactive-device reason or reports a stale active flag. It does not rapidly poll activation status. If a saved iPad is missing, use **Open Spotify to wake iPad**, tap Play there if needed, then manually return for one fresh foreground check; otherwise open Spotify there once, return, refresh/reselect if needed, and Retry. Sarcastaball cannot launch Spotify automatically or switch back. Unavailable track/context content still fails after the bounded retry. |
 | Spotify 429 | Respect rate limiting; quota exhaustion is not fixed by repeated retries |

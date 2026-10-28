@@ -473,7 +473,7 @@ test("a transient post-Start null state does not surrender cue control", async t
 });
 
 for (const operation of ["start", "resume"]) {
-  for (const laggingReads of [0, 1, 3]) {
+  for (const laggingReads of [0, 1]) {
     test(`iPad ${operation} tolerates ${laggingReads} stale confirmation reads without extra playback`, async t => {
       const app = player(t);
       const requests = [];
@@ -508,12 +508,11 @@ for (const operation of ["start", "resume"]) {
       };
 
       assert.equal(await app.run(operation === "start" ? "startPlayback(window.testCell)" : "resumePlayback()"), true);
-      const retryNeeded = laggingReads > 1;
-      assert.equal(requests.filter(request => request.path.startsWith("/me/player/play")).length, retryNeeded ? 2 : 1);
-      assert.equal(requests.filter(request => request.path === "/me/player/devices").length, retryNeeded ? 1 : 0);
-      assert.equal(requests.filter(request => request.path === "/me/player" && request.method === "PUT").length, retryNeeded ? 1 : 0);
+      assert.equal(requests.filter(request => request.path.startsWith("/me/player/play")).length, 1);
+      assert.equal(requests.filter(request => request.path === "/me/player/devices").length, 0);
+      assert.equal(requests.filter(request => request.path === "/me/player" && request.method === "PUT").length, 0);
       assert.equal(reads, laggingReads + 1);
-      assert.deepEqual(delays, laggingReads === 0 ? [750] : laggingReads === 1 ? [750, 1000] : [750, 1000, 500, 750, 1000]);
+      assert.deepEqual(delays, laggingReads === 0 ? [750] : [750, 1000]);
       assert.equal(app.run("nowPlaying.paused"), false);
       const events = Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation')"));
       assert.equal(events.at(-1).outcome, "confirmed");
@@ -559,7 +558,7 @@ test("Stop cancels a stale iPad confirmation recheck before any replay", async t
   assert.equal(app.run("nowPlaying"), null);
 });
 
-test("iPad Start confirms acknowledged playback and repairs one success-shaped no-op", async t => {
+test("iPad identity mismatch never replays or falsely pauses audible playback", async t => {
   const app = player(t);
   const requests = [];
   let plays = 0;
@@ -595,27 +594,27 @@ test("iPad Start confirms acknowledged playback and repairs one success-shaped n
     throw new Error(`Unexpected synthetic request: ${path}`);
   };
 
-  assert.equal(await app.run("startPlayback(window.testCell)"), true);
-  assert.equal(plays, 2);
+  assert.equal(await app.run("startPlayback(window.testCell)"), false);
+  assert.equal(plays, 1);
   assert.deepEqual(requests.map(request => request.path), [
     "/me/player/play?device_id=synthetic-device",
     "/me/player",
     "/me/player",
-    "/me/player/devices",
-    "/me/player",
-    "/me/player/play?device_id=synthetic-device",
-    "/me/player",
   ]);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
   assert.equal(app.run("nowPlaying.paused"), false);
-  assert.equal(app.run("nowPlaying.detached"), false);
+  assert.equal(app.run("!!nowPlaying.detached"), false);
+  assert.equal(app.run("nowPlaying.confirmationUncertain"), true);
+  assert.equal(await app.run("reconcilePlayback()"), false);
+  assert.equal(requests.length, 3, "Unverified track IDs must not trigger recurring checks or false detachment");
+  assert.match(app.window.document.getElementById("transport-status").textContent, /No automatic replay/i);
   assert.deepEqual(
     Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation').map(entry => entry.outcome)")),
-    ["unconfirmed", "unconfirmed", "confirmed"],
+    ["unconfirmed", "unconfirmed"],
   );
 });
 
-test("a quick Pause waits for iPad Start confirmation and its bounded retry", async t => {
+test("a quick Pause after uncertain iPad Start sends Pause, never a replay", async t => {
   const app = player(t);
   const confirmationStarted = deferred();
   const releaseConfirmation = deferred();
@@ -672,27 +671,23 @@ test("a quick Pause waits for iPad Start confirmation and its bounded retry", as
   const pause = app.run("pausePlayback()");
   releaseConfirmation.resolve();
 
-  assert.equal(await start, true);
+  assert.equal(await start, false);
   assert.equal(await pause, true);
-  assert.equal(plays, 2);
+  assert.equal(plays, 1);
   assert.deepEqual(requests.map(request => request.path), [
     "/me/player/play?device_id=synthetic-device",
     "/me/player",
-    "/me/player",
-    "/me/player/devices",
-    "/me/player",
-    "/me/player/play?device_id=synthetic-device",
     "/me/player",
     "/me/player/pause",
   ]);
   assert.deepEqual(
     Array.from(app.run("playbackDiagnosticBuffer.filter(entry => entry.event === 'track-confirmation').map(entry => entry.outcome)")),
-    ["unconfirmed", "unconfirmed", "confirmed"],
+    ["unconfirmed", "unconfirmed"],
   );
   assert.equal(app.run("nowPlaying.paused"), true);
 });
 
-test("failed iPad Start preserves progress and Retry explicitly restores that cue", async t => {
+test("unverified iPad Start retains its local clock and only explicit Retry sends Play", async t => {
   const app = player(t);
   const plays = [];
   let recover = false;
@@ -739,24 +734,26 @@ test("failed iPad Start preserves progress and Retry explicitly restores that cu
   };
 
   assert.equal(await app.run("startPlayback(window.testCell)"), false);
-  assert.equal(plays.length, 2);
+  assert.equal(plays.length, 1);
   assert.equal(app.run("nowPlaying.uuid"), "synthetic-playback");
-  assert.equal(app.run("nowPlaying.paused"), true);
-  assert.equal(app.run("nowPlaying.detached"), true);
-  assert.equal(Math.round(app.run("currentPositionMs()")), 4000);
+  assert.equal(app.run("nowPlaying.paused"), false);
+  assert.equal(app.run("!!nowPlaying.detached"), false);
+  assert.equal(app.run("nowPlaying.confirmationUncertain"), true);
+  assert.equal(Math.round(app.run("currentPositionMs()")), 1750);
   const status = app.window.document.getElementById("transport-status");
-  assert.match(status.textContent, /two start requests.*position was preserved/i);
+  assert.match(status.textContent, /No automatic replay.*Pause normally/i);
   assert.equal(status.querySelector("button")?.textContent, "Retry");
 
   recover = true;
   assert.equal(await app.run("resumePlayback()"), true);
-  assert.equal(plays.length, 3);
-  assert.deepEqual(plays[2], {
+  assert.equal(plays.length, 2);
+  assert.deepEqual(plays[1], {
     uris: ["spotify:track:synthetic-track"],
-    position_ms: 4000,
+    position_ms: 1750,
   });
   assert.equal(app.run("nowPlaying.paused"), false);
   assert.equal(app.run("nowPlaying.detached"), false);
+  assert.equal(app.run("nowPlaying.confirmationUncertain"), false);
   assert.equal(app.window.document.getElementById("transport-status").classList.contains("hidden"), true);
 });
 

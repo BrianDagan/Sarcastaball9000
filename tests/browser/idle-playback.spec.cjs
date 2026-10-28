@@ -58,6 +58,7 @@ async function prepare(page, options = {}) {
     nextTrackStateLagReads: 0,
     staleTrackStateReads: 0,
     staleTrackState: null,
+    reportedTrackId: null,
     leavePauseStateStale: false,
     pendingPauseState: false,
     calls: [],
@@ -115,6 +116,9 @@ async function prepare(page, options = {}) {
         // Capture before the gate so releasing it delivers genuinely stale state.
         const state = structuredClone(backend.staleTrackStateReads > 0
           ? backend.staleTrackState : backend.state);
+        if (backend.reportedTrackId && state.item && state.item.id !== backend.silenceId) {
+          state.item.id = backend.reportedTrackId;
+        }
         if (backend.staleTrackStateReads > 0) backend.staleTrackStateReads--;
         if (backend.pendingPauseState) {
           backend.pendingPauseState = false;
@@ -550,7 +554,7 @@ for (const { recovery, trackPlayed } of [
     const cell = page.locator("#grid .cell").first();
     await expect(cell).not.toHaveClass(/played/);
     if (recovery) {
-      backend.nextTrackStateLagReads = 4;
+      backend.nextTrackStateLagReads = 2;
       await cell.click();
       await page.evaluate(() => transportQueue);
       await expect(page.locator("#transport-status")).toBeVisible();
@@ -593,18 +597,19 @@ test("a stale iPad playback read catches up without transferring or restarting t
   ]);
 });
 
-test("an acknowledged iPad Start no-op gets one bounded confirmation retry", async ({ page }) => {
+test("an acknowledged iPad Start no-op offers explicit Retry without automatically sending Play again", async ({ page }) => {
   const backend = await prepare(page, { keepAlive: false, trackPlayed: false });
   await loadLibrary(page);
   backend.acknowledgeNextTrackWithoutPlayback = true;
 
-  await startSong(page);
+  await page.locator("#grid .cell").first().click();
+  await page.evaluate(() => transportQueue);
+  await expect(page.locator("#transport-status")).toContainText("No automatic replay");
 
-  expect(plays(backend, SONG_URI)).toHaveLength(2);
+  expect(plays(backend, SONG_URI)).toHaveLength(1);
   expect(backend.calls.filter(call =>
-    call.method === "GET" && call.path === "/v1/me/player").length).toBe(3);
-  expect(backend.calls.filter(call =>
-    call.method === "GET" && call.path === "/v1/me/player/devices").length).toBeGreaterThanOrEqual(2);
+    call.method === "GET" && call.path === "/v1/me/player").length).toBe(2);
+  expect(commands(backend, "/v1/me/player")).toHaveLength(0);
   expect(await page.evaluate(() => ({
     uuid: nowPlaying?.uuid,
     paused: nowPlaying?.paused,
@@ -614,11 +619,51 @@ test("an acknowledged iPad Start no-op gets one bounded confirmation retry", asy
       .map(event => event.outcome),
   }))).toMatchObject({
     uuid: ids.firstPlayback,
-    paused: false,
-    detached: false,
-    confirmations: ["unconfirmed", "unconfirmed", "confirmed"],
+    paused: true,
+    detached: true,
+    confirmations: ["unconfirmed", "unconfirmed"],
   });
+  await page.locator("#transport-status").getByRole("button", { name: "Retry", exact: true }).click();
+  await page.evaluate(() => transportQueue);
+  expect(plays(backend, SONG_URI)).toHaveLength(2);
+  expect(await page.evaluate(() => nowPlaying.paused)).toBe(false);
 });
+
+for (const keepAlive of [false, true]) {
+test(`audible playback with mismatched identity never restarts and Pause stays Pause with idle ${keepAlive ? "on" : "off"}`, async ({ page }) => {
+  const backend = await prepare(page, { keepAlive, trackPlayed: true });
+  await loadLibrary(page);
+  if (keepAlive) await idlePass(page);
+  backend.reportedTrackId = "synthetic-unverified-alias";
+  await startSong(page);
+  expect(backend.state.item.id).toBe(SONG_ID);
+  expect(plays(backend, SONG_URI)).toHaveLength(1);
+  await expect(page.locator("#transport-status")).toContainText("No automatic replay");
+  expect(await page.evaluate(() => nowPlaying.confirmationUncertain)).toBe(true);
+  const before = backend.calls.length;
+  await page.evaluate(async () => { await reconcilePlayback(); scheduleReconciliation(); });
+  expect(backend.calls).toHaveLength(before);
+  const cell = page.locator("#grid .cell").first();
+  await cell.click();
+  await expect.poll(() => page.evaluate(() => nowPlaying.paused)).toBe(true);
+  await page.evaluate(() => transportQueue);
+  expect(backend.state.is_playing).toBe(keepAlive);
+  expect(backend.state.item.id).toBe(keepAlive ? backend.silenceId : SONG_ID);
+  expect(commands(backend, "/v1/me/player/pause")).toHaveLength(1);
+  expect(plays(backend, SONG_URI)).toHaveLength(1);
+  expect(commands(backend, "/v1/me/player")).toHaveLength(0);
+  await cell.click();
+  await expect.poll(() => page.evaluate(() => nowPlaying.paused)).toBe(false);
+  await page.evaluate(() => transportQueue);
+  expect(plays(backend, SONG_URI)).toHaveLength(2, "Explicit Resume sends exactly one Play");
+  await cell.click();
+  await expect.poll(() => page.evaluate(() => nowPlaying.paused)).toBe(true);
+  await page.evaluate(() => transportQueue);
+  expect(commands(backend, "/v1/me/player/pause")).toHaveLength(2);
+  expect(plays(backend, SONG_URI)).toHaveLength(2);
+  await expect(cell).not.toHaveClass(/played/);
+});
+}
 
 test("a transient iPad Start 502 gets one bounded device recovery retry", async ({ page }) => {
   const backend = await prepare(page, {

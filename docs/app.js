@@ -2690,8 +2690,9 @@ function updateIdleControls() {
   const running = enabled && !!idlePlayback && !idleFailure && !idleBlocked;
   const songPlaying = !running && !!nowPlaying && !nowPlaying.paused && !nowPlaying.detached;
   const state = !enabled ? "disabled" : idleFailure ? "attention" : running ? "running" : "waiting";
-  const message = songPlaying
-    ? "A song is playing."
+  const message = !running && nowPlaying?.confirmationUncertain
+    ? "Spotify track identity is unverified. The displayed cue uses local timing."
+    : songPlaying ? "A song is playing."
     : !enabled
     ? (idlePlayback ? "Automatic idle mode is off. The last silence track may still be playing." : "Automatic idle mode is off.")
     : idleFailure ? "Automatic idle mode needs attention. See the error message for details."
@@ -3348,47 +3349,20 @@ async function readTrackConfirmation(deviceId, request, current, source, attempt
   }
 }
 
-async function confirmTrackPlayback(deviceId, request, current, source, started, requestedAt) {
+class TrackPlaybackUncertainError extends Error {
+  constructor(state, deviceId) {
+    super("Spotify accepted Play but its reported track could not be verified. No automatic replay was sent. If the correct song is audible, use Pause normally; Retry explicitly sends Play again.");
+    this.playingOnSelectedDevice = state?.device?.id === deviceId && state.is_playing === true &&
+      !!state.item && !isSilenceState(state);
+  }
+}
+
+async function confirmTrackPlayback(deviceId, request, current, source, requestedAt) {
   if (!shouldConfirmTrackPlayback(deviceId)) return null;
-  let confirmation = await readTrackConfirmation(deviceId, request, current, source, 1, requestedAt);
+  const confirmation = await readTrackConfirmation(deviceId, request, current, source, 1, requestedAt);
   if (!confirmation || !current()) return null;
   if (confirmation.confirmed) return confirmation.state;
-  const observed = confirmation.state?.item ? "a different track" : "no current track";
-  if (started?.recovered) {
-    throw new Error(`Spotify acknowledged the recovered ${source} request but reported ${observed}. Your cue position was preserved; press Retry.`);
-  }
-
-  const refreshed = await refreshPlaybackDevice(deviceId, current, source);
-  if (!refreshed || !current()) return null;
-  const active = await reactivatePlaybackDevice(deviceId, current, refreshed, source);
-  if (!active || !current()) return null;
-  const requestMode = diagnosticRequestMode(request.body);
-  const retryAt = performance.now();
-  recordPlaybackDiagnostic("play-request", {
-    purpose: source, attempt: 2, requestMode, recovered: true,
-  });
-  try {
-    await api(`/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
-      method: "PUT",
-      body: JSON.stringify(request.body),
-    }, current);
-    if (current()) recordPlaybackDiagnostic("play-acknowledged", {
-      purpose: source, attempt: 2, requestMode, recovered: true,
-    });
-  } catch (error) {
-    recordPlaybackDiagnostic("play-failed", {
-      purpose: source, attempt: 2, requestMode, recovered: true,
-      ...diagnosticErrorDetails(error),
-    });
-    throw error;
-  }
-  confirmation = await readTrackConfirmation(deviceId, request, current, source, 2, retryAt);
-  if (!confirmation || !current()) return null;
-  if (!confirmation.confirmed) {
-    const finalObserved = confirmation.state?.item ? "a different track" : "no current track";
-    throw new Error(`Spotify acknowledged two ${source} requests but still reported ${finalObserved}. Your cue position was preserved; press Retry.`);
-  }
-  return confirmation.state;
+  throw new TrackPlaybackUncertainError(confirmation.state, deviceId);
 }
 
 function rememberPlaybackExpectation(request, deviceId, issuedAt) {
@@ -3554,7 +3528,7 @@ function scheduleReconciliation() {
   clearTimeout(reconcileTimer);
   reconcileTimer = null;
   const idleOwnsPausedSong = !!idlePlayback && nowPlaying?.paused && idleResume?.uuid === nowPlaying.uuid;
-  if (nowPlaying && !nowPlaying.detached && !erasingBrowser && !idleOwnsPausedSong) {
+  if (nowPlaying && !nowPlaying.detached && !nowPlaying.confirmationUncertain && !erasingBrowser && !idleOwnsPausedSong) {
     reconcileTimer = setTimeout(async () => {
       if (document.visibilityState !== "hidden") await reconcilePlayback();
       scheduleReconciliation();
@@ -3624,7 +3598,7 @@ function reportPlaybackControlLoss(state) {
 }
 
 async function reconcilePlayback() {
-  if (!nowPlaying || transportPending || erasingBrowser) return false;
+  if (!nowPlaying || nowPlaying.confirmationUncertain || transportPending || erasingBrowser) return false;
   const generation = transportGeneration;
   const observed = progress;
   try {
@@ -3808,14 +3782,18 @@ async function startPlayback(cell) {
       trackConfirmationPending = true;
       try {
         const confirmedState = await confirmTrackPlayback(
-          dev, playbackRequest, permitted, "start", started, performance.now(),
+          dev, playbackRequest, permitted, "start", performance.now(),
         );
         if (!confirmedState || !current()) return;
         resetPlaybackConfirmation();
         syncTrackedPlaybackState(confirmedState);
         scheduleIdleCheck();
       } catch (error) {
-        if (current() && nowPlaying?.uuid === snapshot.dataset.pbuuid) preserveTrackedPlaybackPosition();
+        if (current() && nowPlaying?.uuid === snapshot.dataset.pbuuid) {
+          if (error instanceof TrackPlaybackUncertainError && error.playingOnSelectedDevice) {
+            nowPlaying.confirmationUncertain = true;
+          } else preserveTrackedPlaybackPosition();
+        }
         throw error;
       } finally {
         trackConfirmationPending = false;
@@ -3977,6 +3955,7 @@ async function resumePlayback() {
     }
     clearIdlePlayback(true);
     nowPlaying.detached = false;
+    nowPlaying.confirmationUncertain = false;
     setPlaybackPaused(false);
     const expectation = restore || {
       requestedTrackId: playingSnapshot.trackid,
@@ -3988,13 +3967,17 @@ async function resumePlayback() {
       trackConfirmationPending = true;
       try {
         const confirmedState = await confirmTrackPlayback(
-          dev, expectation, permitted, "resume", started, performance.now(),
+          dev, expectation, permitted, "resume", performance.now(),
         );
         if (!confirmedState || !current()) return;
         resetPlaybackConfirmation();
         syncTrackedPlaybackState(confirmedState);
       } catch (error) {
-        if (current() && nowPlaying) preserveTrackedPlaybackPosition();
+        if (current() && nowPlaying) {
+          if (error instanceof TrackPlaybackUncertainError && error.playingOnSelectedDevice) {
+            nowPlaying.confirmationUncertain = true;
+          } else preserveTrackedPlaybackPosition();
+        }
         throw error;
       } finally {
         trackConfirmationPending = false;
