@@ -3821,7 +3821,7 @@ async function startPlayback(cell) {
         trackConfirmationPending = false;
       }
     }
-    markCellPlayed(snapshot);
+    markPlaybackPlayed(snapshot.dataset.pbuuid);
   }, () => nowPlaying?.uuid === snapshot.dataset.pbuuid && nowPlaying.detached
     ? resumePlayback()
     : startPlayback(snapshot));
@@ -3854,16 +3854,15 @@ function updateTrackPlayedControl() {
   if (icon) icon.textContent = trackPlayedOn ? "\u{1F435}" : "\u{1F648}";
 }
 
-// Mark one tile as played (and gray it). No-op when the switch is off or the
-// tile is already marked.
-function markCellPlayed(cell) {
-  if (!trackPlayedOn || !db || !cell) return;
-  if (cell.classList.contains("played")) return;
+// Use the playback UUID so confirmed Resume also works when its tab is hidden.
+function markPlaybackPlayed(pbUUID) {
+  if (!trackPlayedOn || !db || !pbUUID) return;
+  const row = queryAll("SELECT hasBeenPlayedRaw FROM Playback WHERE playbackUUIDRaw = ?", [pbUUID])[0];
+  if (!row || row.hasBeenPlayedRaw) return;
   if (!mutateDatabase(() => db.run("UPDATE Playback SET hasBeenPlayedRaw = 1, updatedTimestamp1970 = ? WHERE playbackUUIDRaw = ?",
-    [Date.now() / 1000, cell.dataset.pbuuid]))) return;
-  cell.classList.add("played");
+    [Date.now() / 1000, pbUUID]))) return;
   document.querySelectorAll(".cell").forEach(tile => {
-    if (tile.dataset.pbuuid === cell.dataset.pbuuid) tile.classList.add("played");
+    if (tile.dataset.pbuuid === pbUUID) tile.classList.add("played");
   });
   markTabOpDirty();
 }
@@ -3882,7 +3881,7 @@ function clearPlayedOnTab() {
 }
 
 // Set or clear a single tile's "played" flag from the right-click menu. Unlike
-// markCellPlayed (which only fires while the Track Played switch is on), this is
+// markPlaybackPlayed (which only fires while the Track Played switch is on), this is
 // a deliberate manual action, so it always applies. Written straight to the DB
 // and cached like the other played-state changes — no Save nag.
 function setCellPlayedFlag(pbUUID, played) {
@@ -4001,6 +4000,7 @@ async function resumePlayback() {
         trackConfirmationPending = false;
       }
     }
+    markPlaybackPlayed(nowPlaying.uuid);
     scheduleReconciliation();
     armStopDeadline();
   }, resumePlayback);

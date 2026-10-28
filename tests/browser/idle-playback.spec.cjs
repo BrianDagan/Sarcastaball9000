@@ -538,6 +538,40 @@ test("idle silence follows Spotify's market-relinked track URI", async ({ page }
   await expectIdleStatus(page);
 });
 
+for (const { recovery, trackPlayed } of [
+  { recovery: false, trackPlayed: true },
+  { recovery: true, trackPlayed: true },
+  { recovery: false, trackPlayed: false },
+  { recovery: true, trackPlayed: false },
+]) {
+  test(`confirmed iPad ${recovery ? "Retry" : "Start"} preserves played tracking ${trackPlayed ? "on" : "off"} through reload`, async ({ page }) => {
+    const backend = await prepare(page, { keepAlive: false, trackPlayed });
+    await loadLibrary(page);
+    const cell = page.locator("#grid .cell").first();
+    await expect(cell).not.toHaveClass(/played/);
+    if (recovery) {
+      backend.nextTrackStateLagReads = 4;
+      await cell.click();
+      await page.evaluate(() => transportQueue);
+      await expect(page.locator("#transport-status")).toBeVisible();
+      await expect(cell).not.toHaveClass(/played/);
+      await page.locator("#tabs .tab").nth(1).click();
+      await page.locator("#transport-status").getByRole("button", { name: "Retry", exact: true }).click();
+      await page.evaluate(() => transportQueue);
+      await page.locator("#tabs .tab").first().click();
+    } else {
+      await startSong(page);
+    }
+    await expect(cell).toHaveClass(trackPlayed ? /played/ : /^(?!.*played)/);
+    expect(await page.evaluate(uuid => queryAll(
+      "SELECT hasBeenPlayedRaw FROM Playback WHERE playbackUUIDRaw = ?", [uuid],
+    )[0].hasBeenPlayedRaw, ids.firstPlayback)).toBe(trackPlayed ? 1 : 0);
+    await page.evaluate(() => databaseQueue);
+    await page.reload();
+    await expect(page.locator("#grid .cell").first()).toHaveClass(trackPlayed ? /played/ : /^(?!.*played)/);
+  });
+}
+
 test("a stale iPad playback read catches up without transferring or restarting the song", async ({ page }) => {
   const backend = await prepare(page, { keepAlive: false, trackPlayed: false });
   await loadLibrary(page);

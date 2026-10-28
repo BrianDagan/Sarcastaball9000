@@ -90,6 +90,17 @@ test("played-only changes are exportable and mark the working copy dirty", async
   assert.equal(scalar(app.SQL, exported, `SELECT hasBeenPlayedRaw FROM Playback WHERE playbackUUIDRaw='${ids.firstPlayback}'`), 1);
 });
 
+test("automatic played marking uses the database UUID even when the tile is not rendered", async t => {
+  const app = await databaseApp(t);
+  app.run(`document.getElementById("grid").replaceChildren(); setTrackPlayed(true); markPlaybackPlayed('${ids.firstPlayback}')`);
+  assert.equal(app.rows(`SELECT hasBeenPlayedRaw FROM Playback WHERE playbackUUIDRaw='${ids.firstPlayback}'`)[0].hasBeenPlayedRaw, 1);
+  const dirty = app.run("pendingCount()");
+  app.run(`markPlaybackPlayed('${ids.firstPlayback}'); markPlaybackPlayed('synthetic-missing-playback')`);
+  assert.equal(app.run("pendingCount()"), dirty);
+  const exported = await app.run("exportWorkingDatabase()");
+  assert.equal(scalar(app.SQL, exported, `SELECT hasBeenPlayedRaw FROM Playback WHERE playbackUUIDRaw='${ids.firstPlayback}'`), 1);
+});
+
 test("save reports failure if recovery of newer edits cannot be persisted", async t => {
   const app = await databaseApp(t);
   app.window.confirm = () => true;

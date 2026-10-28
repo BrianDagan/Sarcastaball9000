@@ -390,8 +390,12 @@ playback alone. A failed or unconfirmed pause still needs checking in Spotify.
 Opting out does not reset sign-in, settings, library data or edits.
 
 The neighboring **Track Played** switch uses an uncovered monkey face when on
-and a covered-eyes monkey when off. Its original played-marking behavior is
-unchanged, and its accessible label remains independent of the icon.
+and a covered-eyes monkey when off. Confirmed Start and Resume (including Retry
+after an unconfirmed Start) mark the song as played while this switch is on,
+even when its tab is not visible. Unconfirmed playback does not mark the song.
+Marks survive reload and Save. The currently playing tile stays visually bright;
+its played dimming appears after playback moves away. The accessible switch
+label remains independent of the icon.
 
 ### Foreground renewal and limits
 
